@@ -1,3 +1,20 @@
+import os
+import zipfile
+
+# ── Descomprimir fuentes automáticamente ──────────────────────────────────
+if not os.path.exists("fuentes") and os.path.exists("fuentes.zip"):
+    with zipfile.ZipFile("fuentes.zip", "r") as z:
+        z.extractall(".")
+    print("✅ Fuentes descomprimidas")
+
+# ── Descomprimir imágenes automáticamente ─────────────────────────────────
+if not os.path.exists("bcnd.jpg") and os.path.exists("img.zip"):
+    with zipfile.ZipFile("img.zip", "r") as z:
+        z.extractall(".")
+    print("✅ Imágenes descomprimidas")
+
+# ─────────────────────────────────────────────────────────────────────────
+
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler, JobQueue
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from config import (
@@ -24,7 +41,6 @@ from config import (
 )
 from utils import generar_comprobante, generar_comprobante_nuevo, generar_comprobante_anulado, enmascarar_nombre, generar_comprobante_ahorros, generar_comprobante_daviplata, generar_comprobante_bc_nq_t, generar_comprobante_bc_qr, generar_comprobante_nequi_bc, generar_comprobante_nequi_ahorros, generar_movimiento_bancolombia
 from auth_system import AuthSystem
-import os
 import logging
 import traceback
 from datetime import datetime, date, timedelta
