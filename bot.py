@@ -13,7 +13,7 @@ if not os.path.exists("bcnd.jpg") and os.path.exists("img.zip"):
         z.extractall(".")
     print("✅ Imágenes descomprimidas")
 
- ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────
 
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler, JobQueue
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
