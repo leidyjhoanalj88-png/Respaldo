@@ -346,6 +346,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     text = update.message.text.strip()
+    logging.warning(f"[DEBUG] user={user_id} text={repr(text)} store={user_data_store.get(user_id)}")
 
     button_mapping = {
         "Nequi": "comprobante1", "Transfiya": "comprobante4",
