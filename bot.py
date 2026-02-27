@@ -50,6 +50,15 @@ VENCIMIENTOS_FILE = "vencimientos.json"
 
 
 # ─────────────────────────────────────────────
+# Helper para limpiar valores numéricos
+# ─────────────────────────────────────────────
+def limpiar_valor(text):
+    import unicodedata
+    text = unicodedata.normalize('NFKC', text)
+    return text.strip().replace(".", "").replace(",", "").replace(" ", "").replace("$", "").replace("\xa0", "").replace("\u200b", "")
+
+
+# ─────────────────────────────────────────────
 # Parser QR EMV
 # ─────────────────────────────────────────────
 def parsear_qr_emv(contenido):
@@ -370,9 +379,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Monto QR desde foto
     if user_id in user_data_store and user_data_store[user_id].get("step") == "qr_monto":
         data = user_data_store[user_id]
-        if not text.replace("-","",1).isdigit():
+        limpio = limpiar_valor(text)
+        if not limpio.replace("-","",1).isdigit():
             await update.message.reply_text("❌ El valor debe ser numérico."); return
-        valor = int(text)
+        valor = int(limpio)
         if valor < 1000:
             await update.message.reply_text("❌ Mínimo $1,000."); return
         data["valor"] = valor
@@ -413,8 +423,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["telefono"] = text; data["step"] = 2
             await update.message.reply_text("Ingresa el valor")
         elif step == 2:
-            if not text.replace("-","",1).isdigit(): await update.message.reply_text("Valor numérico"); return
-            v = int(text)
+            limpio = limpiar_valor(text)
+            if not limpio.replace("-","",1).isdigit(): await update.message.reply_text("❌ Ingresa solo números, sin letras ni símbolos"); return
+            v = int(limpio)
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Ingresa la referencia\nEjemplo: M12345678"); return
@@ -466,8 +477,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["telefono"] = text; data["step"] = 1
             await update.message.reply_text("Digite el valor")
         elif step == 1:
-            if not text.replace("-","",1).isdigit(): await update.message.reply_text("Valor numérico"); return
-            v = int(text)
+            limpio = limpiar_valor(text)
+            if not limpio.replace("-","",1).isdigit(): await update.message.reply_text("❌ Ingresa solo números"); return
+            v = int(limpio)
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
@@ -517,8 +529,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["nombre"] = text; data["step"] = 1
             await update.message.reply_text("Ingresa el valor")
         elif step == 1:
-            if not text.replace("-","",1).isdigit(): await update.message.reply_text("Valor numérico"); return
-            v = int(text)
+            limpio = limpiar_valor(text)
+            if not limpio.replace("-","",1).isdigit(): await update.message.reply_text("❌ Ingresa solo números"); return
+            v = int(limpio)
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
@@ -568,8 +581,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["nombre"] = text; data["step"] = 1
             await update.message.reply_text("Ingresa el valor")
         elif step == 1:
-            if not text.replace("-","",1).isdigit(): await update.message.reply_text("Valor numérico"); return
-            v = int(text)
+            limpio = limpiar_valor(text)
+            if not limpio.replace("-","",1).isdigit(): await update.message.reply_text("❌ Ingresa solo números"); return
+            v = int(limpio)
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v
             if fecha_manual_mode.get(user_id): data["step"] = 2; await update.message.reply_text("📅 Fecha:"); return
@@ -594,7 +608,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["numero_cuenta"] = text; data["step"] = 2
             await update.message.reply_text("Ingresa el valor")
         elif step == 2:
-            v = int(text.replace(".","").replace(",","").replace(" ",""))
+            limpio = limpiar_valor(text)
+            if not limpio.replace("-","",1).isdigit(): await update.message.reply_text("❌ Ingresa solo números"); return
+            v = int(limpio)
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v
             if fecha_manual_mode.get(user_id): data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
@@ -619,7 +635,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["numero_cuenta"] = text; data["step"] = 2
             await update.message.reply_text("Ingresa el valor")
         elif step == 2:
-            v = int(text.replace(".","").replace(",","").replace(" ",""))
+            limpio = limpiar_valor(text)
+            if not limpio.replace("-","",1).isdigit(): await update.message.reply_text("❌ Ingresa solo números"); return
+            v = int(limpio)
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v
             if fecha_manual_mode.get(user_id): data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
@@ -639,7 +657,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["nombre"] = text; data["step"] = 1
             await update.message.reply_text("Ingresa el valor")
         elif step == 1:
-            v = int(text.replace(".","").replace(",","").replace(" ",""))
+            limpio = limpiar_valor(text)
+            if not limpio.replace("-","",1).isdigit(): await update.message.reply_text("❌ Ingresa solo números"); return
+            v = int(limpio)
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v; data["step"] = 2
             await update.message.reply_text("Ingresa los 4 dígitos de la cuenta que envía")
@@ -669,7 +689,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["telefono"] = text; data["step"] = 1
             await update.message.reply_text("Ingresa el valor")
         elif step == 1:
-            v = int(text.replace(".","").replace(",","").replace(" ",""))
+            limpio = limpiar_valor(text)
+            if not limpio.replace("-","",1).isdigit(): await update.message.reply_text("❌ Ingresa solo números"); return
+            v = int(limpio)
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v
             if fecha_manual_mode.get(user_id): data["step"] = 2; await update.message.reply_text("📅 Fecha:"); return
@@ -702,7 +724,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(out)
             await send_success_message(update); del user_data_store[user_id]
         elif step == 4:
-            data["fecha_manuel"] = text
+            data["fecha_manual"] = text
             out = generar_comprobante_bc_qr(data, COMPROBANTE_BC_QR_CONFIG)
             with open(out,"rb") as f: await update.message.reply_document(document=f, caption="BC QR")
             os.remove(out)
@@ -713,7 +735,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["nombre"] = text; data["step"] = 1
             await update.message.reply_text("Ingresa el valor")
         elif step == 1:
-            v = int(text.replace(".","").replace(",","").replace(" ",""))
+            limpio = limpiar_valor(text)
+            if not limpio.replace("-","",1).isdigit(): await update.message.reply_text("❌ Ingresa solo números"); return
+            v = int(limpio)
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v; data["step"] = 2
             await update.message.reply_text("Ingresa el número de cuenta")
@@ -752,7 +776,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["nombre"] = text; data["step"] = 1
             await update.message.reply_text("Ingresa el valor")
         elif step == 1:
-            v = int(text.replace(".","").replace(",","").replace(" ",""))
+            limpio = limpiar_valor(text)
+            if not limpio.replace("-","",1).isdigit(): await update.message.reply_text("❌ Ingresa solo números"); return
+            v = int(limpio)
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v; data["step"] = 2
             await update.message.reply_text("Ingresa el número de cuenta")
@@ -792,10 +818,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Ingresa el valor")
         elif step == 1:
             try:
-                v = float(text.replace(".","").replace(",","."))
+                limpio = limpiar_valor(text)
+                v = float(limpio)
                 if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
                 data["valor"] = v
-            except: await update.message.reply_text("Valor numérico"); return
+            except: await update.message.reply_text("❌ Ingresa solo números"); return
             data["step"] = 2; await update.message.reply_text("Ingresa la llave")
         elif step == 2:
             data["llave"] = text; data["step"] = 3
@@ -1170,7 +1197,7 @@ async def referencias_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 # Main
 # ─────────────────────────────────────────────
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).job_queue(JobQueue()).build()
     app.job_queue.run_repeating(verificar_vencimientos, interval=43200, first=60)
 
     app.add_handler(CommandHandler("comprobante", start))
