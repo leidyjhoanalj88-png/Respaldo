@@ -26,6 +26,7 @@ from utils import generar_comprobante, generar_comprobante_nuevo, generar_compro
 from auth_system import AuthSystem
 import os
 import logging
+import traceback
 from datetime import datetime, date, timedelta
 import pytz
 import json
@@ -49,18 +50,12 @@ REFERENCIAS_FILE = "referencias.json"
 VENCIMIENTOS_FILE = "vencimientos.json"
 
 
-# ─────────────────────────────────────────────
-# Helper para limpiar valores numéricos
-# ─────────────────────────────────────────────
 def limpiar_valor(text):
     import unicodedata
     text = unicodedata.normalize('NFKC', text)
     return text.strip().replace(".", "").replace(",", "").replace(" ", "").replace("$", "").replace("\xa0", "").replace("\u200b", "")
 
 
-# ─────────────────────────────────────────────
-# Parser QR EMV
-# ─────────────────────────────────────────────
 def parsear_qr_emv(contenido):
     try:
         pos = 0
@@ -109,9 +104,6 @@ def extraer_nombre_qr(contenido):
     return contenido[:40].strip()
 
 
-# ─────────────────────────────────────────────
-# Vencimientos
-# ─────────────────────────────────────────────
 def cargar_vencimientos():
     if os.path.exists(VENCIMIENTOS_FILE):
         try:
@@ -196,9 +188,6 @@ async def verificar_vencimientos(context: ContextTypes.DEFAULT_TYPE):
         guardar_vencimientos(vencimientos)
 
 
-# ─────────────────────────────────────────────
-# Referencias
-# ─────────────────────────────────────────────
 def cargar_referencias():
     if os.path.exists(REFERENCIAS_FILE):
         try:
@@ -213,9 +202,6 @@ def guardar_referencias(referencias):
         json.dump(referencias, f, ensure_ascii=False, indent=2)
 
 
-# ─────────────────────────────────────────────
-# Teclados
-# ─────────────────────────────────────────────
 def admin_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💎 ¿Necesitas acceso?", callback_data="apk_precios")],
@@ -225,9 +211,25 @@ def admin_keyboard():
     ])
 
 
-# ─────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────
+# ── Helper global para generar y enviar — muestra el error exacto ───────────
+async def generar_y_enviar(update, fn, data, config, caption=" "):
+    try:
+        out = fn(data, config)
+        with open(out, "rb") as f:
+            await update.message.reply_document(document=f, caption=caption)
+        os.remove(out)
+        return True
+    except Exception:
+        tb = traceback.format_exc()
+        logging.error(f"[ERROR COMPROBANTE] {tb}")
+        await update.message.reply_text(
+            f"❌ Error generando comprobante:\n<code>{tb[-1000:]}</code>",
+            parse_mode="HTML"
+        )
+        return False
+# ────────────────────────────────────────────────────────────────────────────
+
+
 async def send_success_message(update: Update):
     await update.message.reply_text(
         "✅ **Comprobante generado con éxito**\n\nUsa /comprobante para generar otro",
@@ -248,9 +250,6 @@ async def notify_main_admin(context, admin_id, admin_name, action, target_info="
         print(f"[notify_admin error] {e}")
 
 
-# ─────────────────────────────────────────────
-# Handlers principales
-# ─────────────────────────────────────────────
 async def start_redirect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Bienvenido al generador de comprobantes\n\n"
@@ -388,19 +387,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Mínimo $1,000."); return
         data["valor"] = valor
         await update.message.reply_text("⏳ Generando comprobante QR...")
-        try:
-            out = generar_comprobante(data, COMPROBANTE_QR_CONFIG)
-            with open(out, "rb") as f:
-                await update.message.reply_document(document=f, caption=" ")
-            os.remove(out)
+        ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE_QR_CONFIG)
+        if ok:
             dm = {"nombre": data["nombre"].upper(), "valor": -abs(valor)}
-            out2 = generar_comprobante(dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
-            with open(out2, "rb") as f:
-                await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
+            await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
             await send_success_message(update)
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
         del user_data_store[user_id]
         return
 
@@ -414,6 +405,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tipo = data["tipo"]
     step = data["step"]
 
+    # ── NEQUI ───────────────────────────────────────────────────────────────
     if tipo == "comprobante1":
         if step == 0:
             data["nombre"] = text; data["step"] = 1
@@ -431,46 +423,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["valor"] = v
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Ingresa la referencia\nEjemplo: M12345678"); return
             if fecha_manual_mode.get(user_id): data["step"] = 3; await update.message.reply_text("📅 Ingresa la fecha"); return
-            output_path = generar_comprobante(data, COMPROBANTE1_CONFIG)
-            with open(output_path,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(output_path)
-            dm = data.copy(); dm["nombre"] = data["nombre"].upper(); dm["valor"] = -abs(v)
-            out2 = generar_comprobante(dm, COMPROBANTE_MOVIMIENTO_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE1_CONFIG)
+            if ok:
+                dm = data.copy(); dm["nombre"] = data["nombre"].upper(); dm["valor"] = -abs(v)
+                await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 3:
             data["fecha_manual"] = text
-            output_path = generar_comprobante(data, COMPROBANTE1_CONFIG)
-            with open(output_path,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(output_path)
-            dm = data.copy(); dm["nombre"] = data["nombre"].upper(); dm["valor"] = -abs(data["valor"])
-            out2 = generar_comprobante(dm, COMPROBANTE_MOVIMIENTO_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE1_CONFIG)
+            if ok:
+                dm = data.copy(); dm["nombre"] = data["nombre"].upper(); dm["valor"] = -abs(data["valor"])
+                await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 10:
             data["referencia_manual"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 11; await update.message.reply_text("📅 Ingresa la fecha"); return
-            output_path = generar_comprobante(data, COMPROBANTE1_CONFIG)
-            with open(output_path,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(output_path)
-            dm = data.copy(); dm["nombre"] = data["nombre"].upper(); dm["valor"] = -abs(data["valor"])
-            out2 = generar_comprobante(dm, COMPROBANTE_MOVIMIENTO_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE1_CONFIG)
+            if ok:
+                dm = data.copy(); dm["nombre"] = data["nombre"].upper(); dm["valor"] = -abs(data["valor"])
+                await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 11:
             data["fecha_manual"] = text
-            output_path = generar_comprobante(data, COMPROBANTE1_CONFIG)
-            with open(output_path,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(output_path)
-            dm = data.copy(); dm["nombre"] = data["nombre"].upper(); dm["valor"] = -abs(data["valor"])
-            out2 = generar_comprobante(dm, COMPROBANTE_MOVIMIENTO_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE1_CONFIG)
+            if ok:
+                dm = data.copy(); dm["nombre"] = data["nombre"].upper(); dm["valor"] = -abs(data["valor"])
+                await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
 
+    # ── TRANSFIYA ───────────────────────────────────────────────────────────
     elif tipo == "comprobante4":
         if step == 0:
             if not text.isdigit() or len(text) != 10 or not text.startswith('3'):
@@ -485,46 +470,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["valor"] = v
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
             if fecha_manual_mode.get(user_id): data["step"] = 2; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante(data, COMPROBANTE4_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out)
-            dm2 = {"telefono": data["telefono"], "valor": -abs(v), "nombre": data["telefono"]}
-            out2 = generar_comprobante(dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE4_CONFIG)
+            if ok:
+                dm2 = {"telefono": data["telefono"], "valor": -abs(v), "nombre": data["telefono"]}
+                await generar_y_enviar(update, generar_comprobante, dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 2:
             data["fecha_manual"] = text
-            out = generar_comprobante(data, COMPROBANTE4_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out)
-            dm2 = {"telefono": data["telefono"], "valor": -abs(data["valor"]), "nombre": data["telefono"]}
-            out2 = generar_comprobante(dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE4_CONFIG)
+            if ok:
+                dm2 = {"telefono": data["telefono"], "valor": -abs(data["valor"]), "nombre": data["telefono"]}
+                await generar_y_enviar(update, generar_comprobante, dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 10:
             data["referencia_manual"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante(data, COMPROBANTE4_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out)
-            dm2 = {"telefono": data["telefono"], "valor": -abs(data["valor"]), "nombre": data["telefono"]}
-            out2 = generar_comprobante(dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE4_CONFIG)
+            if ok:
+                dm2 = {"telefono": data["telefono"], "valor": -abs(data["valor"]), "nombre": data["telefono"]}
+                await generar_y_enviar(update, generar_comprobante, dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 11:
             data["fecha_manual"] = text
-            out = generar_comprobante(data, COMPROBANTE4_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out)
-            dm2 = {"telefono": data["telefono"], "valor": -abs(data["valor"]), "nombre": data["telefono"]}
-            out2 = generar_comprobante(dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE4_CONFIG)
+            if ok:
+                dm2 = {"telefono": data["telefono"], "valor": -abs(data["valor"]), "nombre": data["telefono"]}
+                await generar_y_enviar(update, generar_comprobante, dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
 
+    # ── NEQUI QR ────────────────────────────────────────────────────────────
     elif tipo == "comprobante_qr":
         if step == 0:
             data["nombre"] = text; data["step"] = 1
@@ -537,46 +515,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["valor"] = v
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
             if fecha_manual_mode.get(user_id): data["step"] = 2; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante(data, COMPROBANTE_QR_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out)
-            dm = {"nombre": data["nombre"].upper(), "valor": -abs(v)}
-            out2 = generar_comprobante(dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE_QR_CONFIG)
+            if ok:
+                dm = {"nombre": data["nombre"].upper(), "valor": -abs(v)}
+                await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 2:
             data["fecha_manual"] = text
-            out = generar_comprobante(data, COMPROBANTE_QR_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out)
-            dm = {"nombre": data["nombre"].upper(), "valor": -abs(data["valor"])}
-            out2 = generar_comprobante(dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE_QR_CONFIG)
+            if ok:
+                dm = {"nombre": data["nombre"].upper(), "valor": -abs(data["valor"])}
+                await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 10:
             data["referencia_manual"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante(data, COMPROBANTE_QR_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out)
-            dm = {"nombre": data["nombre"].upper(), "valor": -abs(data["valor"])}
-            out2 = generar_comprobante(dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE_QR_CONFIG)
+            if ok:
+                dm = {"nombre": data["nombre"].upper(), "valor": -abs(data["valor"])}
+                await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 11:
             data["fecha_manual"] = text
-            out = generar_comprobante(data, COMPROBANTE_QR_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out)
-            dm = {"nombre": data["nombre"].upper(), "valor": -abs(data["valor"])}
-            out2 = generar_comprobante(dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE_QR_CONFIG)
+            if ok:
+                dm = {"nombre": data["nombre"].upper(), "valor": -abs(data["valor"])}
+                await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
 
+    # ── ANULADO ─────────────────────────────────────────────────────────────
     elif tipo == "comprobante_anulado":
         if step == 0:
             data["nombre"] = text; data["step"] = 1
@@ -588,17 +559,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v
             if fecha_manual_mode.get(user_id): data["step"] = 2; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante_anulado(data, COMPROBANTE_ANULADO_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="ANULADO")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_anulado, data, COMPROBANTE_ANULADO_CONFIG, "ANULADO")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 2:
             data["fecha_manual"] = text
-            out = generar_comprobante_anulado(data, COMPROBANTE_ANULADO_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="ANULADO")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_anulado, data, COMPROBANTE_ANULADO_CONFIG, "ANULADO")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
 
+    # ── AHORROS ─────────────────────────────────────────────────────────────
     elif tipo == "comprobante_ahorros":
         if step == 0:
             data["nombre"] = text; data["step"] = 1
@@ -615,17 +585,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v
             if fecha_manual_mode.get(user_id): data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante_ahorros(data, COMPROBANTE_AHORROS_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Ahorros")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_ahorros, data, COMPROBANTE_AHORROS_CONFIG, "Ahorros")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 3:
             data["fecha_manual"] = text
-            out = generar_comprobante_ahorros(data, COMPROBANTE_AHORROS_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Ahorros")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_ahorros, data, COMPROBANTE_AHORROS_CONFIG, "Ahorros")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
 
+    # ── CORRIENTE ───────────────────────────────────────────────────────────
     elif tipo == "comprobante_corriente":
         if step == 0:
             data["nombre"] = text; data["step"] = 1
@@ -642,17 +611,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v
             if fecha_manual_mode.get(user_id): data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante_ahorros(data, COMPROBANTE_AHORROS2_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Corriente")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_ahorros, data, COMPROBANTE_AHORROS2_CONFIG, "Corriente")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 3:
             data["fecha_manual"] = text
-            out = generar_comprobante_ahorros(data, COMPROBANTE_AHORROS2_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Corriente")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_ahorros, data, COMPROBANTE_AHORROS2_CONFIG, "Corriente")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
 
+    # ── DAVIPLATA ───────────────────────────────────────────────────────────
     elif tipo == "comprobante_daviplata":
         if step == 0:
             data["nombre"] = text; data["step"] = 1
@@ -672,17 +640,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not text.isdigit() or len(text) != 4: await update.message.reply_text("4 dígitos exactos"); return
             data["envia"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 4; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante_daviplata(data, COMPROBANTE_DAVIPLATA_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Daviplata")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_daviplata, data, COMPROBANTE_DAVIPLATA_CONFIG, "Daviplata")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 4:
             data["fecha_manual"] = text
-            out = generar_comprobante_daviplata(data, COMPROBANTE_DAVIPLATA_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Daviplata")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_daviplata, data, COMPROBANTE_DAVIPLATA_CONFIG, "Daviplata")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
 
+    # ── BC A NQ ─────────────────────────────────────────────────────────────
     elif tipo == "comprobante_bc_nq_t":
         if step == 0:
             if not text.isdigit() or len(text) != 10 or not text.startswith('3'):
@@ -696,18 +663,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v
             if fecha_manual_mode.get(user_id): data["step"] = 2; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante_bc_nq_t(data, COMPROBANTE_BC_NQ_T_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="BC a NQ")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_bc_nq_t, data, COMPROBANTE_BC_NQ_T_CONFIG, "BC a NQ")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 2:
             data["fecha_manual"] = text
-            out = generar_comprobante_bc_nq_t(data, COMPROBANTE_BC_NQ_T_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="BC a NQ")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_bc_nq_t, data, COMPROBANTE_BC_NQ_T_CONFIG, "BC a NQ")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
 
-    # ── BC QR CORREGIDO ──────────────────────────────────────────────────────
+    # ── BC QR ────────────────────────────────────────────────────────────────
     elif tipo == "comprobante_bc_qr":
         if step == 0:
             data["descripcion_qr"] = text; data["step"] = 1
@@ -715,14 +680,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif step == 1:
             limpio = limpiar_valor(text)
             if not limpio.replace("-","",1).isdigit():
-                await update.message.reply_text("❌ Ingresa solo números, sin letras ni símbolos")
-                return
+                await update.message.reply_text("❌ Ingresa solo números, sin letras ni símbolos"); return
             v = int(limpio)
-            if v < 1000:
-                await update.message.reply_text("Mínimo $1,000")
-                return
-            data["valor"] = v
-            data["step"] = 2
+            if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
+            data["valor"] = v; data["step"] = 2
             await update.message.reply_text("Ingresa el nombre")
         elif step == 2:
             data["nombre"] = text; data["step"] = 3
@@ -730,30 +691,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif step == 3:
             digitos = "".join(ch for ch in text if ch.isdigit())
             if len(digitos) < 8:
-                await update.message.reply_text("❌ Número de cuenta inválido, verifica e intenta de nuevo")
-                return
+                await update.message.reply_text("❌ Número de cuenta inválido"); return
             data["numero_cuenta"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 4; await update.message.reply_text("📅 Fecha:"); return
-            try:
-                out = generar_comprobante_bc_qr(data, COMPROBANTE_BC_QR_CONFIG)
-                with open(out,"rb") as f: await update.message.reply_document(document=f, caption="BC QR")
-                os.remove(out)
-                await send_success_message(update)
-            except Exception as e:
-                await update.message.reply_text(f"❌ Error al generar comprobante: {e}")
+            ok = await generar_y_enviar(update, generar_comprobante_bc_qr, data, COMPROBANTE_BC_QR_CONFIG, "BC QR")
+            if ok: await send_success_message(update)
             del user_data_store[user_id]
         elif step == 4:
             data["fecha_manual"] = text
-            try:
-                out = generar_comprobante_bc_qr(data, COMPROBANTE_BC_QR_CONFIG)
-                with open(out,"rb") as f: await update.message.reply_document(document=f, caption="BC QR")
-                os.remove(out)
-                await send_success_message(update)
-            except Exception as e:
-                await update.message.reply_text(f"❌ Error al generar comprobante: {e}")
+            ok = await generar_y_enviar(update, generar_comprobante_bc_qr, data, COMPROBANTE_BC_QR_CONFIG, "BC QR")
+            if ok: await send_success_message(update)
             del user_data_store[user_id]
-    # ────────────────────────────────────────────────────────────────────────
 
+    # ── NEQUI CORRIENTE ─────────────────────────────────────────────────────
     elif tipo == "comprobante_nequi_bc":
         if step == 0:
             data["nombre"] = text; data["step"] = 1
@@ -771,30 +721,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["numero_cuenta"] = text
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
             if fecha_manual_mode.get(user_id): data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante_nequi_bc(data, COMPROBANTE_NEQUI_BC_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Nequi Corriente")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_nequi_bc, data, COMPROBANTE_NEQUI_BC_CONFIG, "Nequi Corriente")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 3:
             data["fecha_manual"] = text
-            out = generar_comprobante_nequi_bc(data, COMPROBANTE_NEQUI_BC_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Nequi Corriente")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_nequi_bc, data, COMPROBANTE_NEQUI_BC_CONFIG, "Nequi Corriente")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 10:
             data["referencia_manual"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante_nequi_bc(data, COMPROBANTE_NEQUI_BC_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Nequi Corriente")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_nequi_bc, data, COMPROBANTE_NEQUI_BC_CONFIG, "Nequi Corriente")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 11:
             data["fecha_manual"] = text
-            out = generar_comprobante_nequi_bc(data, COMPROBANTE_NEQUI_BC_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Nequi Corriente")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_nequi_bc, data, COMPROBANTE_NEQUI_BC_CONFIG, "Nequi Corriente")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
 
+    # ── NEQUI AHORROS ───────────────────────────────────────────────────────
     elif tipo == "comprobante_nequi_ahorros":
         if step == 0:
             data["nombre"] = text; data["step"] = 1
@@ -812,30 +759,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["numero_cuenta"] = text
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
             if fecha_manual_mode.get(user_id): data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante_nequi_ahorros(data, COMPROBANTE_NEQUI_AHORROS_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Nequi Ahorros")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_nequi_ahorros, data, COMPROBANTE_NEQUI_AHORROS_CONFIG, "Nequi Ahorros")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 3:
             data["fecha_manual"] = text
-            out = generar_comprobante_nequi_ahorros(data, COMPROBANTE_NEQUI_AHORROS_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Nequi Ahorros")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_nequi_ahorros, data, COMPROBANTE_NEQUI_AHORROS_CONFIG, "Nequi Ahorros")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 10:
             data["referencia_manual"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante_nequi_ahorros(data, COMPROBANTE_NEQUI_AHORROS_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Nequi Ahorros")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_nequi_ahorros, data, COMPROBANTE_NEQUI_AHORROS_CONFIG, "Nequi Ahorros")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 11:
             data["fecha_manual"] = text
-            out = generar_comprobante_nequi_ahorros(data, COMPROBANTE_NEQUI_AHORROS_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Nequi Ahorros")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_nequi_ahorros, data, COMPROBANTE_NEQUI_AHORROS_CONFIG, "Nequi Ahorros")
+            if ok: await send_success_message(update)
+            del user_data_store[user_id]
 
+    # ── BRE B ───────────────────────────────────────────────────────────────
     elif tipo == "comprobante_nuevo":
         if step == 0:
             data["nombre"] = text; data["step"] = 1
@@ -860,46 +804,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["numero_envia"] = text
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
             if fecha_manual_mode.get(user_id): data["step"] = 5; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante_nuevo(data, COMPROBANTE_NUEVO_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out)
-            dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
-            out2 = generar_comprobante(dm, MVKEY_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_nuevo, data, COMPROBANTE_NUEVO_CONFIG)
+            if ok:
+                dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
+                await generar_y_enviar(update, generar_comprobante, dm, MVKEY_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 5:
             data["fecha_manual"] = text
-            out = generar_comprobante_nuevo(data, COMPROBANTE_NUEVO_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out)
-            dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
-            out2 = generar_comprobante(dm, MVKEY_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_nuevo, data, COMPROBANTE_NUEVO_CONFIG)
+            if ok:
+                dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
+                await generar_y_enviar(update, generar_comprobante, dm, MVKEY_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 10:
             data["referencia_manual"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante_nuevo(data, COMPROBANTE_NUEVO_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out)
-            dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
-            out2 = generar_comprobante(dm, MVKEY_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_nuevo, data, COMPROBANTE_NUEVO_CONFIG)
+            if ok:
+                dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
+                await generar_y_enviar(update, generar_comprobante, dm, MVKEY_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
         elif step == 11:
             data["fecha_manual"] = text
-            out = generar_comprobante_nuevo(data, COMPROBANTE_NUEVO_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out)
-            dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
-            out2 = generar_comprobante(dm, MVKEY_CONFIG)
-            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
-            os.remove(out2)
-            await send_success_message(update); del user_data_store[user_id]
+            ok = await generar_y_enviar(update, generar_comprobante_nuevo, data, COMPROBANTE_NUEVO_CONFIG)
+            if ok:
+                dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
+                await generar_y_enviar(update, generar_comprobante, dm, MVKEY_CONFIG)
+                await send_success_message(update)
+            del user_data_store[user_id]
 
+    # ── AGREGAR USUARIO ─────────────────────────────────────────────────────
     elif tipo == "agregar_usuario":
         if step == 0:
             if not text.isdigit(): await update.message.reply_text("❌ ID numérico"); return
@@ -1217,9 +1154,6 @@ async def referencias_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await enviar_referencias_paginadas(update, context, cargar_referencias(), offset)
 
 
-# ─────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────
 def main():
     app = Application.builder().token(BOT_TOKEN).job_queue(JobQueue()).build()
     app.job_queue.run_repeating(verificar_vencimientos, interval=43200, first=60)
