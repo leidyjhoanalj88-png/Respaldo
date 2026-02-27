@@ -1,5 +1,5 @@
 COMPROBANTE1_CONFIG = {
-    "template": "img/plantilla1.jpg",
+    "template": "plantilla1.jpg",
     "output": "comprobante1_generado.png",
     "styles": {
         "nombre": {"size": 22, "color": "#200021", "pos": (50, 605)},
@@ -13,7 +13,7 @@ COMPROBANTE1_CONFIG = {
 }
 
 COMPROBANTE4_CONFIG = {
-    "template": "img/plantilla4.jpg",
+    "template": "plantilla4.jpg",
     "output": "comprobante4_generado.png",
     "styles": {
         "telefono": {"size": 22, "color": "#200021", "pos": (47, 262)},
@@ -26,7 +26,7 @@ COMPROBANTE4_CONFIG = {
 }
 
 COMPROBANTE_MOVIMIENTO_CONFIG = {
-    "template": "img/comprobante_movimiento.jpg",
+    "template": "comprobante_movimiento.jpg",
     "output": "comprobante_movimiento_generado.png",
     "styles": {
         "nombre": {"size": 18, "color": "#1b0b19", "pos": (87, 324), "font": "fuentes/Manrope-Medium.ttf"},
@@ -37,7 +37,7 @@ COMPROBANTE_MOVIMIENTO_CONFIG = {
 }
 
 COMPROBANTE_MOVIMIENTO2_CONFIG = {
-    "template": "img/plantilla2.jpg",
+    "template": "plantilla2.jpg",
     "output": "comprobante_movimiento2_generado.png",
     "styles": {
         "nombre": {"size": 18, "color": "#1b0b19", "pos": (87, 324), "font": "fuentes/Manrope-Medium.ttf"},
@@ -48,7 +48,7 @@ COMPROBANTE_MOVIMIENTO2_CONFIG = {
 }
 
 COMPROBANTE_QR_CONFIG = {
-    "template": "img/plantilla_qr.jpg",
+    "template": "plantilla_qr.jpg",
     "output": "comprobante_qr_generado.png",
     "styles": {
         "nombre": {"size": 22, "color": "#2e2b33", "pos": (48, 585)},
@@ -61,7 +61,7 @@ COMPROBANTE_QR_CONFIG = {
 }
 
 COMPROBANTE_MOVIMIENTO3_CONFIG = {
-    "template": "img/comprobante_movimiento3.jpg",
+    "template": "comprobante_movimiento3.jpg",
     "output": "comprobante_movimiento3_generado.png",
     "styles": {
         "nombre": {"size": 18, "color": "#1b0b19", "pos": (87, 324), "font": "fuentes/Manrope-Medium.ttf"},
@@ -72,7 +72,7 @@ COMPROBANTE_MOVIMIENTO3_CONFIG = {
 }
 
 COMPROBANTE_NUEVO_CONFIG = {
-    "template": "img/plantillakey.jpg",
+    "template": "plantillakey.jpg",
     "output": "comprobante_nuevo_generado.png",
     "styles": {
         "nombre": {"size": 21, "color": "#200020", "pos": (48, 512)},
@@ -88,7 +88,7 @@ COMPROBANTE_NUEVO_CONFIG = {
 }
 
 COMPROBANTE_ANULADO_CONFIG = {
-    "template": "img/anulado.jpg",
+    "template": "anulado.jpg",
     "output": "comprobante_anulado.png",
     "styles": {
         "nombre": {"size": 22, "color": "#200021", "pos": (48, 278)},
@@ -99,9 +99,8 @@ COMPROBANTE_ANULADO_CONFIG = {
     "font": "fuentes/Manrope-Medium.ttf",
 }
 
-# âœ… Nuevo movimiento para llaves
 MVKEY_CONFIG = {
-    "template": "img/comprobante_mvkey.jpg",
+    "template": "comprobante_mvkey.jpg",
     "output": "comprobante_mvkey_generado.png",
     "styles": {
         "nombre": {"size": 18, "color": "#1b0b19", "pos": (87, 324), "font": "fuentes/Manrope-Medium.ttf"},
@@ -111,9 +110,8 @@ MVKEY_CONFIG = {
     "font": "fuentes/Manrope-Medium.ttf"
 }
 
-# âœ… Configuración para comprobante de Ahorros
 COMPROBANTE_AHORROS_CONFIG = {
-    "template": "img/p.jpg",
+    "template": "p.jpg",
     "output": "comprobante_ahorros_generado.png",
     "styles": {
         "nombre": {"size": 24, "color": "#FFFFFF", "pos": (45, 825), "font": "fuentes/cibfontsans_bold.ttf"},
@@ -124,9 +122,8 @@ COMPROBANTE_AHORROS_CONFIG = {
     "font": "fuentes/cibfontsans_bold.ttf",
 }
 
-# âœ… Configuración para comprobante de Corriente (w.jpg)
 COMPROBANTE_AHORROS2_CONFIG = {
-    "template": "img/w.jpg",
+    "template": "w.jpg",
     "output": "comprobante_ahorros2_generado.png",
     "styles": {
         "nombre": {"size": 24, "color": "#FFFFFF", "pos": (45, 825), "font": "fuentes/cibfontsans_bold.ttf"},
@@ -137,9 +134,8 @@ COMPROBANTE_AHORROS2_CONFIG = {
     "font": "fuentes/cibfontsans_bold.ttf",
 }
 
-# âœ… Configuración para comprobante de Daviplata
 COMPROBANTE_DAVIPLATA_CONFIG = {
-    "template": "img/daviplata.jpg",
+    "template": "daviplata.jpg",
     "output": "comprobante_daviplata_generado.png",
     "styles": {
         "nombre": {"size": 22, "color": "#333333", "pos": (90, 650), "font": "fuentes/Manrope-Bold.ttf"},
@@ -152,9 +148,8 @@ COMPROBANTE_DAVIPLATA_CONFIG = {
     "font": "fuentes/Manrope-Bold.ttf",
 }
 
-# âœ… Configuración para comprobante BC a NQ y T
 COMPROBANTE_BC_NQ_T_CONFIG = {
-    "template": "img/bcnd.jpg",
+    "template": "bcnd.jpg",
     "output": "comprobante_bc_nq_t_generado.png",
     "styles": {
         "numero_cuenta": {"size": 46, "color": "#FFFFFF", "pos": (96, 2052), "font": "fuentes/OpenSans-Semibold.ttf"},
@@ -164,28 +159,21 @@ COMPROBANTE_BC_NQ_T_CONFIG = {
     "font": "fuentes/CIB-Font-Sans-Regular.ttf",
 }
 
-# âœ… Configuración para comprobante BC QR
 COMPROBANTE_BC_QR_CONFIG = {
-    "template": "img/new.jpg",
+    "template": "new.jpg",
     "output": "comprobante_bc_qr_generado.png",
     "styles": {
-        # Descripción del QR (punto de venta)
         "punto_venta": {"size": 22, "color": "#FFFFFF", "pos": (46, 559), "font": "fuentes/cibfontsans_bold.ttf"},
-        # Valor
         "valor": {"size": 25, "color": "#FFFFFF", "pos": (46, 631), "font": "fuentes/cibfontsans_bold.ttf"},
-        # Nombre
         "nombre_enmascarado": {"size": 23, "color": "#FFFFFF", "pos": (46, 893), "font": "fuentes/cibfontsans_bold.ttf"},
-        # Número de cuenta (código de comercio)
-        "codigo_comercio": {"size": 17, "color": "#FFFFFF", "pos": (46, 951), "font": "fuentes/opensans_semibold.ttf"},
-        # Fecha
+        "codigo_comercio": {"size": 17, "color": "#FFFFFF", "pos": (46, 951), "font": "fuentes/OpenSans-Semibold.ttf"},
         "fecha": {"size": 18, "color": "#FFFFFF", "pos": (182, 364), "font": "fuentes/opensans_regular.ttf"},
     },
     "font": "fuentes/cibfontsans_bold.ttf",
 }
 
-# âœ… Configuración para comprobante Nequi a Bancolombia
 COMPROBANTE_NEQUI_BC_CONFIG = {
-    "template": "img/bc.png",
+    "template": "bc.png",
     "output": "comprobante_nequi_bc_generado.png",
     "styles": {
         "nombre": {"size": 22, "color": "#200021", "pos": (48, 562)},
@@ -199,9 +187,8 @@ COMPROBANTE_NEQUI_BC_CONFIG = {
     "font": "fuentes/Manrope-Medium.ttf"
 }
 
-# âœ… Configuración para comprobante Nequi Ahorros (con nombres enmascarados)
 COMPROBANTE_NEQUI_AHORROS_CONFIG = {
-    "template": "img/bc.png",
+    "template": "bc.png",
     "output": "comprobante_nequi_ahorros_generado.png",
     "styles": {
         "nombre": {"size": 22, "color": "#200021", "pos": (48, 562)},
@@ -215,7 +202,6 @@ COMPROBANTE_NEQUI_AHORROS_CONFIG = {
     "font": "fuentes/Manrope-Medium.ttf"
 }
 
-# âœ… Configuraciones para movimientos de Bancolombia
 MOVIMIENTO_BC_AHORROS_CONFIG = {
     "template": "mov bancol/ahorros.jpg",
     "output": "movimiento_bc_ahorros_generado.png",
