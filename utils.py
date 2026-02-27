@@ -1,4 +1,3 @@
-
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
 import pytz
@@ -102,8 +101,9 @@ def generar_comprobante(data, config):
     draw = ImageDraw.Draw(image)
 
     tipo_movimiento = "valor1" in styles and "nombre" in styles and "valor_decimal" in styles
-    es_comprobante_qr = config["output"] == "comprobante_qr_generado.png"
-    es_comprobante4 = config["output"] == "comprobante4_generado.png"
+    # ── CORRECCIÓN: usar .get() para evitar KeyError si no existe "output" ──
+    es_comprobante_qr = config.get("output", "") == "comprobante_qr_generado.png"
+    es_comprobante4 = config.get("output", "") == "comprobante4_generado.png"
 
     if tipo_movimiento:
         decimal_style = styles.get("valor_decimal")
@@ -407,6 +407,8 @@ def generar_comprobante_bc_qr(data, config):
     template_path = config["template"]
     output_path = f"gen_{uuid.uuid4().hex}.png"
     styles = config["styles"]
+    # ── CORRECCIÓN: font_path global del config como fallback ──
+    font_path = config.get("font", "")
 
     image = Image.open(template_path).convert("RGB")
     draw = ImageDraw.Draw(image)
@@ -444,7 +446,10 @@ def generar_comprobante_bc_qr(data, config):
     for campo, texto in datos.items():
         if campo in styles:
             style = styles[campo]
-            fuente_campo = style.get("font")
+            # ── CORRECCIÓN: si el style no tiene "font", usa font_path del config ──
+            fuente_campo = style.get("font") or font_path
+            if not fuente_campo:
+                raise ValueError(f"No se encontró fuente para el campo '{campo}'. Verifica COMPROBANTE_BC_QR_CONFIG.")
             font = ImageFont.truetype(fuente_campo, style["size"])
             draw.text(style["pos"], str(texto), font=font, fill=style["color"])
 
