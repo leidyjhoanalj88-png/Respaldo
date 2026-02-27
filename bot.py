@@ -707,29 +707,52 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(out)
             await send_success_message(update); del user_data_store[user_id]
 
+    # ── BC QR CORREGIDO ──────────────────────────────────────────────────────
     elif tipo == "comprobante_bc_qr":
         if step == 0:
             data["descripcion_qr"] = text; data["step"] = 1
             await update.message.reply_text("Ingresa el valor")
         elif step == 1:
-            data["valor"] = text; data["step"] = 2
+            limpio = limpiar_valor(text)
+            if not limpio.replace("-","",1).isdigit():
+                await update.message.reply_text("❌ Ingresa solo números, sin letras ni símbolos")
+                return
+            v = int(limpio)
+            if v < 1000:
+                await update.message.reply_text("Mínimo $1,000")
+                return
+            data["valor"] = v
+            data["step"] = 2
             await update.message.reply_text("Ingresa el nombre")
         elif step == 2:
             data["nombre"] = text; data["step"] = 3
             await update.message.reply_text("Ingresa el número de cuenta")
         elif step == 3:
+            digitos = "".join(ch for ch in text if ch.isdigit())
+            if len(digitos) < 8:
+                await update.message.reply_text("❌ Número de cuenta inválido, verifica e intenta de nuevo")
+                return
             data["numero_cuenta"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 4; await update.message.reply_text("📅 Fecha:"); return
-            out = generar_comprobante_bc_qr(data, COMPROBANTE_BC_QR_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="BC QR")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            try:
+                out = generar_comprobante_bc_qr(data, COMPROBANTE_BC_QR_CONFIG)
+                with open(out,"rb") as f: await update.message.reply_document(document=f, caption="BC QR")
+                os.remove(out)
+                await send_success_message(update)
+            except Exception as e:
+                await update.message.reply_text(f"❌ Error al generar comprobante: {e}")
+            del user_data_store[user_id]
         elif step == 4:
             data["fecha_manual"] = text
-            out = generar_comprobante_bc_qr(data, COMPROBANTE_BC_QR_CONFIG)
-            with open(out,"rb") as f: await update.message.reply_document(document=f, caption="BC QR")
-            os.remove(out)
-            await send_success_message(update); del user_data_store[user_id]
+            try:
+                out = generar_comprobante_bc_qr(data, COMPROBANTE_BC_QR_CONFIG)
+                with open(out,"rb") as f: await update.message.reply_document(document=f, caption="BC QR")
+                os.remove(out)
+                await send_success_message(update)
+            except Exception as e:
+                await update.message.reply_text(f"❌ Error al generar comprobante: {e}")
+            del user_data_store[user_id]
+    # ────────────────────────────────────────────────────────────────────────
 
     elif tipo == "comprobante_nequi_bc":
         if step == 0:
