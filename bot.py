@@ -424,9 +424,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["nombre"] = text; data["step"] = 1
             await update.message.reply_text("Ingresa el número de teléfono")
         elif step == 1:
-            if not text.isdigit() or len(text) != 10 or not text.startswith('3'):
-                await update.message.reply_text("Número inválido. Debe empezar en 3 y tener 10 dígitos"); return
-            data["telefono"] = text; data["step"] = 2
+            tel = text.strip().replace(" ", "").replace("-", "")
+            if tel.startswith("+57"): tel = tel[3:]
+            elif tel.startswith("57") and len(tel) == 12: tel = tel[2:]
+            if not tel.isdigit() or len(tel) != 10 or not tel.startswith("3"):
+                await update.message.reply_text("\u274c Número inválido. Debe tener 10 dígitos y empezar en 3.\nEjemplo: 3001234567\n\nUsa /cancelar para reiniciar."); return
+            data["telefono"] = tel; data["step"] = 2
             await update.message.reply_text("Ingresa el valor")
         elif step == 2:
             limpio = limpiar_valor(text)
@@ -472,7 +475,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif tipo == "comprobante4":
         if step == 0:
             if not text.isdigit() or len(text) != 10 or not text.startswith('3'):
-                await update.message.reply_text("Número inválido"); return
+                await update.message.reply_text("❌ Número inválido. 10 dígitos, empieza en 3.\nUsa /cancelar para reiniciar."); return
             data["telefono"] = text; data["step"] = 1
             await update.message.reply_text("Digite el valor")
         elif step == 1:
@@ -666,7 +669,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif tipo == "comprobante_bc_nq_t":
         if step == 0:
             if not text.isdigit() or len(text) != 10 or not text.startswith('3'):
-                await update.message.reply_text("Número inválido"); return
+                await update.message.reply_text("❌ Número inválido. 10 dígitos, empieza en 3.\nUsa /cancelar para reiniciar."); return
             data["telefono"] = text; data["step"] = 1
             await update.message.reply_text("Ingresa el valor")
         elif step == 1:
@@ -813,7 +816,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Ingresa el número de quien envía")
         elif step == 4:
             if not text.isdigit() or len(text) != 10 or not text.startswith('3'):
-                await update.message.reply_text("Número inválido"); return
+                await update.message.reply_text("❌ Número inválido. 10 dígitos, empieza en 3.\nUsa /cancelar para reiniciar."); return
             data["numero_envia"] = text
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
             if fecha_manual_mode.get(user_id): data["step"] = 5; await update.message.reply_text("📅 Fecha:"); return
