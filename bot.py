@@ -41,6 +41,7 @@ from config import (
 )
 from utils import generar_comprobante, generar_comprobante_nuevo, generar_comprobante_anulado, enmascarar_nombre, generar_comprobante_ahorros, generar_comprobante_daviplata, generar_comprobante_bc_nq_t, generar_comprobante_bc_qr, generar_comprobante_nequi_bc, generar_comprobante_nequi_ahorros, generar_movimiento_bancolombia
 from auth_system import AuthSystem
+import asyncio
 import logging
 import traceback
 from datetime import datetime, date, timedelta
@@ -53,9 +54,8 @@ logging.basicConfig(level=logging.DEBUG)
 
 BOT_TOKEN  = "8239033621:AAEjVqVXM6u9hT009gi1unSluwVMO93IWRs"
 ADMIN_ID   = 8114050673
-ADMIN_ID_2 = 8517391123
-ALLOWED_GROUP    = -1003871244748
-REQUIRED_GROUP_ID = -1003871244748
+ALLOWED_GROUP    = -1003496628417
+REQUIRED_GROUP_ID = -1003496628417
 GROUP_LINK       = "https://t.me/+QlKCwgWIYa9kN2Yx"
 
 auth_system = AuthSystem(ADMIN_ID, ALLOWED_GROUP)
@@ -169,8 +169,7 @@ async def verificar_vencimientos(context: ContextTypes.DEFAULT_TYPE):
                         f"Hola {info['nombre']}, tu acceso al bot vence en *3 días* "
                         f"({fecha_vence.strftime('%d/%m/%Y')}).\n\n"
                         f"Renueva con un administrador para no perder el acceso.\n\n"
-                        f"👑 ADM 1: @8114050673\n"
-                        f"🔑 ADM 2: @8517391123"
+                        f"👑 ADM: @8114050673"
                     ),
                     parse_mode="Markdown"
                 )
@@ -186,12 +185,11 @@ async def verificar_vencimientos(context: ContextTypes.DEFAULT_TYPE):
                         f"🔴 *Acceso Expirado*\n\n"
                         f"Hola {info['nombre']}, tu acceso al bot ha expirado.\n\n"
                         f"Contacta a un administrador para renovar:\n\n"
-                        f"👑 ADM 1\n🔑 ADM 2"
+                        f"👑 ADM 1\n"
                     ),
                     parse_mode="Markdown",
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("👑 ADM 1", url="tg://user?id=8114050673"),
-                         InlineKeyboardButton("🔑 ADM 2", url="tg://user?id=8517391123")],
+                        [InlineKeyboardButton("👑 ADM", url="tg://user?id=8114050673")],
                         [InlineKeyboardButton("📢 Grupo", url=GROUP_LINK)]
                     ])
                 )
@@ -221,8 +219,7 @@ def guardar_referencias(referencias):
 def admin_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💎 ¿Necesitas acceso?", callback_data="apk_precios")],
-        [InlineKeyboardButton("👑 ADM 1", url="tg://user?id=8114050673"),
-         InlineKeyboardButton("🔑 ADM 2", url="tg://user?id=8517391123")],
+        [InlineKeyboardButton("👑 ADM", url="tg://user?id=8114050673")],
         [InlineKeyboardButton("📢 Grupo", url=GROUP_LINK)]
     ])
 
@@ -822,6 +819,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if fecha_manual_mode.get(user_id): data["step"] = 5; await update.message.reply_text("📅 Fecha:"); return
             ok = await generar_y_enviar(update, generar_comprobante_nuevo, data, COMPROBANTE_NUEVO_CONFIG)
             if ok:
+                await asyncio.sleep(1.5)
                 dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
                 await generar_y_enviar(update, generar_comprobante, dm, MVKEY_CONFIG)
                 await send_success_message(update)
@@ -830,6 +828,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["fecha_manual"] = text
             ok = await generar_y_enviar(update, generar_comprobante_nuevo, data, COMPROBANTE_NUEVO_CONFIG)
             if ok:
+                await asyncio.sleep(1.5)
                 dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
                 await generar_y_enviar(update, generar_comprobante, dm, MVKEY_CONFIG)
                 await send_success_message(update)
@@ -839,6 +838,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if fecha_manual_mode.get(user_id): data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
             ok = await generar_y_enviar(update, generar_comprobante_nuevo, data, COMPROBANTE_NUEVO_CONFIG)
             if ok:
+                await asyncio.sleep(1.5)
                 dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
                 await generar_y_enviar(update, generar_comprobante, dm, MVKEY_CONFIG)
                 await send_success_message(update)
@@ -847,6 +847,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["fecha_manual"] = text
             ok = await generar_y_enviar(update, generar_comprobante_nuevo, data, COMPROBANTE_NUEVO_CONFIG)
             if ok:
+                await asyncio.sleep(1.5)
                 dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
                 await generar_y_enviar(update, generar_comprobante, dm, MVKEY_CONFIG)
                 await send_success_message(update)
