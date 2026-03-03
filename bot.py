@@ -56,7 +56,7 @@ BOT_TOKEN  = "8239033621:AAEjVqVXM6u9hT009gi1unSluwVMO93IWRs"
 ADMIN_ID   = 8114050673
 ALLOWED_GROUP    = -1003496628417
 REQUIRED_GROUP_ID = -1003496628417
-GROUP_LINK       = "https://t.me/+QlKCwgWIYa9kN2Yx"
+GROUP_LINK       = "https://t.me/httpsNequiblogger"
 
 auth_system = AuthSystem(ADMIN_ID, ALLOWED_GROUP)
 user_data_store = {}
