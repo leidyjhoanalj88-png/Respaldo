@@ -1394,7 +1394,19 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("🤖 Bot iniciado correctamente.")
-    app.run_polling()
+    # ✅ Reintentar automáticamente si hay Conflict
+    while True:
+        try:
+            app.run_polling(drop_pending_updates=True)
+            break
+        except Exception as e:
+            if "Conflict" in str(e):
+                import time
+                logging.warning("⚠️ Conflict detectado, esperando 10s y reintentando...")
+                time.sleep(10)
+                continue
+            else:
+                raise
 
 if __name__ == "__main__":
     main()
