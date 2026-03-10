@@ -233,19 +233,23 @@ def admin_keyboard():
 
 # ── Helper global para generar y enviar — limpia estado y muestra error exacto ──
 async def generar_y_enviar(update, fn, data, config, caption=" "):
-    """
-    Genera el comprobante directamente (sin executor para máxima compatibilidad).
-    Limpia archivos temporales aunque falle.
-    """
     out = None
     try:
-        # ✅ Llamada directa — más estable con PIL/Pillow y fuentes personalizadas
         out = fn(data, config)
         if not out or not os.path.exists(out):
             raise ValueError(f"La función no generó archivo: {out}")
-        with open(out, "rb") as f:
-            await update.message.reply_document(document=f, caption=caption)
-        return True
+        # ✅ Reintentar una vez si hay TimedOut
+        for intento in range(2):
+            try:
+                with open(out, "rb") as f:
+                    await update.message.reply_document(document=f, caption=caption)
+                return True
+            except Exception as e:
+                if "TimedOut" in str(e) and intento == 0:
+                    logging.warning("[TIMEOUT] Reintentando envío...")
+                    await asyncio.sleep(3)
+                    continue
+                raise
     except Exception:
         tb = traceback.format_exc()
         logging.error(f"[ERROR COMPROBANTE] {tb}")
@@ -255,7 +259,6 @@ async def generar_y_enviar(update, fn, data, config, caption=" "):
         )
         return False
     finally:
-        # ✅ Siempre limpiar el archivo temporal, pase lo que pase
         if out and os.path.exists(out):
             try:
                 os.remove(out)
@@ -412,7 +415,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Nequi Corriente": "comprobante_nequi_bc", "Nequi Ahorros": "comprobante_nequi_ahorros"
     }
 
-    if text in button_mapping and user_id not in user_data_store:
+    if text in button_mapping:
+        # ✅ Si el usuario selecciona un botón nuevo, cancelar sesión anterior automáticamente
+        if user_id in user_data_store:
+            logging.warning(f"[DEBUG] Cancelando sesión anterior de {user_id} para iniciar {button_mapping[text]}")
+            limpiar_usuario(user_id)
+
         # ✅ Admins siempre tienen acceso
         if not auth_system.is_admin(user_id) and not auth_system.can_use_bot(user_id, chat_id) and not auth_system.gratis_mode:
             await update.message.reply_text("🔴 Bot en Modo OFF", reply_markup=admin_keyboard())
@@ -1336,7 +1344,21 @@ async def referencias_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 def main():
-    app = Application.builder().token(BOT_TOKEN).job_queue(JobQueue()).build()
+    from telegram.request import HTTPXRequest
+    request = HTTPXRequest(
+        connection_pool_size=8,
+        read_timeout=60,
+        write_timeout=60,
+        connect_timeout=30,
+        pool_timeout=30,
+    )
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .request(request)
+        .job_queue(JobQueue())
+        .build()
+    )
     app.job_queue.run_repeating(verificar_vencimientos, interval=43200, first=60)
 
     app.add_handler(CommandHandler("comprobante", start))
