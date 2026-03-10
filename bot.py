@@ -861,9 +861,11 @@ async def referencias_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 # ══════════════════════════════════════════════════════════════════════════
 
 def main():
+    import time
     from telegram.request import HTTPXRequest
     request = HTTPXRequest(connection_pool_size=8, read_timeout=60, write_timeout=60, connect_timeout=30, pool_timeout=30)
-    app = Application.builder().token(BOT_TOKEN).request(request).job_queue(JobQueue()).build()
+    # FIX: Se eliminó job_queue(JobQueue()) manual — el builder lo gestiona automáticamente
+    app = Application.builder().token(BOT_TOKEN).request(request).build()
     app.job_queue.run_repeating(verificar_vencimientos, interval=43200, first=60)
 
     app.add_handler(CommandHandler("comprobante",  start))
@@ -897,13 +899,15 @@ def main():
     print("🤖 Bot iniciado correctamente.")
     while True:
         try:
-            app.run_polling(drop_pending_updates=True, allowed_updates=["message", "callback_query"], close_loop=False)
-            break
+            # FIX: Se eliminó close_loop=False (inestable en v20+) y el break que mataba el bot
+            app.run_polling(drop_pending_updates=True, allowed_updates=["message", "callback_query"])
         except Exception as e:
             if "Conflict" in str(e):
-                import time; logging.warning("⚠️ Conflict, esperando 15s..."); time.sleep(15)
+                logging.warning("⚠️ Conflict detectado, esperando 15s..."); time.sleep(15)
             else:
-                raise
+                # FIX: En vez de raise (morir), loguea y reintenta después de 10s
+                logging.error(f"❌ Error inesperado: {e}. Reiniciando en 10s...")
+                time.sleep(10)
 
 if __name__ == "__main__":
     main()
