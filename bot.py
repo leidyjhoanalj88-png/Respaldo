@@ -1359,6 +1359,11 @@ def main():
         .job_queue(JobQueue())
         .build()
     )
+    # ✅ Limpiar sesiones anteriores antes de iniciar
+    import asyncio as _asyncio
+    async def _drop():
+        await app.bot.delete_webhook(drop_pending_updates=True)
+    _asyncio.get_event_loop().run_until_complete(_drop())
     app.job_queue.run_repeating(verificar_vencimientos, interval=43200, first=60)
 
     app.add_handler(CommandHandler("comprobante", start))
