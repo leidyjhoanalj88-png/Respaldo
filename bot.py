@@ -39,7 +39,12 @@ from config import (
     MOVIMIENTO_BC_NEQUI_CONFIG,
     MOVIMIENTO_BC_QR_CONFIG
 )
-from utils import generar_comprobante, generar_comprobante_nuevo, generar_comprobante_anulado, enmascarar_nombre, generar_comprobante_ahorros, generar_comprobante_daviplata, generar_comprobante_bc_nq_t, generar_comprobante_bc_qr, generar_comprobante_nequi_bc, generar_comprobante_nequi_ahorros, generar_movimiento_bancolombia
+from utils import (
+    generar_comprobante, generar_comprobante_nuevo, generar_comprobante_anulado,
+    enmascarar_nombre, generar_comprobante_ahorros, generar_comprobante_daviplata,
+    generar_comprobante_bc_nq_t, generar_comprobante_bc_qr, generar_comprobante_nequi_bc,
+    generar_comprobante_nequi_ahorros, generar_movimiento_bancolombia
+)
 from auth_system import AuthSystem
 import asyncio
 import logging
@@ -52,11 +57,13 @@ import urllib.parse
 
 logging.basicConfig(level=logging.DEBUG)
 
-BOT_TOKEN  = "8239033621:AAHwAseokJaNiKbyJmL2Crb8OyAwNZk6uh0"
-ADMIN_ID   = 8114050673
-ALLOWED_GROUP    = -1003496628417
-REQUIRED_GROUP_ID = -1003496628417
-GROUP_LINK       = "https://t.me/httpsNequiblogger"
+# ── CONFIGURACIÓN PRINCIPAL ───────────────────────────────────────────────
+BOT_TOKEN         = "8239033621:AAHwAseokJaNiKbyJmL2Crb8OyAwNZk6uh0"
+ADMIN_ID          = 7422843477                  # ✅ ACTUALIZADO
+ALLOWED_GROUP     = -1003512376124              # ✅ ACTUALIZADO
+REQUIRED_GROUP_ID = -1003512376124              # ✅ ACTUALIZADO
+GROUP_LINK        = "https://t.me/nequixxx"     # ✅ ACTUALIZADO
+# ─────────────────────────────────────────────────────────────────────────
 
 auth_system = AuthSystem(ADMIN_ID, ALLOWED_GROUP)
 user_data_store = {}
@@ -169,7 +176,7 @@ async def verificar_vencimientos(context: ContextTypes.DEFAULT_TYPE):
                         f"Hola {info['nombre']}, tu acceso al bot vence en *3 días* "
                         f"({fecha_vence.strftime('%d/%m/%Y')}).\n\n"
                         f"Renueva con un administrador para no perder el acceso.\n\n"
-                        f"👑 ADM: @8114050673"
+                        f"👑 ADM: @nequixxx"
                     ),
                     parse_mode="Markdown"
                 )
@@ -189,7 +196,7 @@ async def verificar_vencimientos(context: ContextTypes.DEFAULT_TYPE):
                     ),
                     parse_mode="Markdown",
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("👑 ADM", url="tg://user?id=8114050673")],
+                        [InlineKeyboardButton("👑 ADM", url="tg://user?id=7422843477")],  # ✅ ACTUALIZADO
                         [InlineKeyboardButton("📢 Grupo", url=GROUP_LINK)]
                     ])
                 )
@@ -219,33 +226,60 @@ def guardar_referencias(referencias):
 def admin_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💎 ¿Necesitas acceso?", callback_data="apk_precios")],
-        [InlineKeyboardButton("👑 ADM", url="tg://user?id=8114050673")],
+        [InlineKeyboardButton("👑 ADM", url="tg://user?id=7422843477")],  # ✅ ACTUALIZADO
         [InlineKeyboardButton("📢 Grupo", url=GROUP_LINK)]
     ])
 
 
-# ── Helper global para generar y enviar — muestra el error exacto ───────────
+# ── Helper global para generar y enviar — limpia estado y muestra error exacto ──
 async def generar_y_enviar(update, fn, data, config, caption=" "):
+    """
+    Genera el comprobante en un hilo separado para no bloquear el bot.
+    Limpia archivos temporales aunque falle.
+    """
+    out = None
     try:
-        out = fn(data, config)
+        # ✅ MEJORA: correr la función pesada en un executor para no bloquear
+        loop = asyncio.get_event_loop()
+        out = await asyncio.wait_for(
+            loop.run_in_executor(None, fn, data, config),
+            timeout=30  # ✅ timeout de 30 segundos
+        )
         with open(out, "rb") as f:
             await update.message.reply_document(document=f, caption=caption)
-        os.remove(out)
         return True
+    except asyncio.TimeoutError:
+        logging.error("[ERROR] Timeout generando comprobante")
+        await update.message.reply_text("⏱️ Tardó demasiado. Intenta de nuevo con /comprobante")
+        return False
     except Exception:
         tb = traceback.format_exc()
         logging.error(f"[ERROR COMPROBANTE] {tb}")
         await update.message.reply_text(
-            f"❌ Error generando comprobante:\n<code>{tb[-1000:]}</code>",
+            f"❌ Error generando comprobante:\n<code>{tb[-800:]}</code>",
             parse_mode="HTML"
         )
         return False
-# ────────────────────────────────────────────────────────────────────────────
+    finally:
+        # ✅ MEJORA: siempre limpiar el archivo temporal
+        if out and os.path.exists(out):
+            try:
+                os.remove(out)
+            except Exception as e:
+                logging.warning(f"[CLEANUP] No se pudo borrar {out}: {e}")
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def limpiar_usuario(user_id):
+    """✅ MEJORA: limpia todos los datos de sesión de un usuario de golpe"""
+    user_data_store.pop(user_id, None)
+    fecha_manual_mode.pop(user_id, None)
+    referencia_manual_mode.pop(user_id, None)
 
 
 async def send_success_message(update: Update):
     await update.message.reply_text(
-        "✅ **Comprobante generado con éxito**\n\nUsa /comprobante para generar otro",
+        "✅ *Comprobante generado con éxito*\n\nUsa /comprobante para generar otro",
         parse_mode='Markdown'
     )
 
@@ -287,18 +321,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not auth_system.can_use_bot(user_id, chat_id):
         if not auth_system.gratis_mode:
             await update.message.reply_text(
-                "🔴 **Bot en Modo OFF**\n\n💰 Contacta a un administrador para acceso premium.",
+                "🔴 *Bot en Modo OFF*\n\n💰 Contacta a un administrador para acceso premium.",
                 parse_mode='Markdown',
                 reply_markup=admin_keyboard()
             )
             return
 
+    # ✅ MENÚ REORGANIZADO
     keyboard = [
-        [KeyboardButton("Nequi"), KeyboardButton("Daviplata")],
-        [KeyboardButton("Nequi QR"), KeyboardButton("Bre B"), KeyboardButton("Anulado")],
-        [KeyboardButton("Ahorros"), KeyboardButton("Corriente")],
-        [KeyboardButton("BC a NQ"), KeyboardButton("BC QR")],
-        [KeyboardButton("Nequi Corriente"), KeyboardButton("Nequi Ahorros")]
+        [KeyboardButton("Nequi"),        KeyboardButton("Nequi QR")],
+        [KeyboardButton("Daviplata"),    KeyboardButton("Bre B")],
+        [KeyboardButton("Ahorros"),      KeyboardButton("Corriente")],
+        [KeyboardButton("BC a NQ"),      KeyboardButton("BC QR")],
+        [KeyboardButton("Nequi Corriente"), KeyboardButton("Nequi Ahorros")],
+        [KeyboardButton("Anulado")]
     ]
     await update.message.reply_text(
         "Selecciona el comprobante que quieres generar:",
@@ -399,13 +435,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if valor < 1000:
             await update.message.reply_text("❌ Mínimo $1,000."); return
         data["valor"] = valor
-        await update.message.reply_text("⏳ Generando comprobante QR...")
+        msg_espera = await update.message.reply_text("⏳ Generando comprobante QR...")
         ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE_QR_CONFIG)
         if ok:
             dm = {"nombre": data["nombre"].upper(), "valor": -abs(valor)}
             await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
             await send_success_message(update)
-        del user_data_store[user_id]
+        try: await msg_espera.delete()
+        except: pass
+        limpiar_usuario(user_id)
         return
 
     if user_id not in user_data_store:
@@ -428,7 +466,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if tel.startswith("+57"): tel = tel[3:]
             elif tel.startswith("57") and len(tel) == 12: tel = tel[2:]
             if not tel.isdigit() or len(tel) != 10 or not tel.startswith("3"):
-                await update.message.reply_text("\u274c Número inválido. Debe tener 10 dígitos y empezar en 3.\nEjemplo: 3001234567\n\nUsa /cancelar para reiniciar."); return
+                await update.message.reply_text("❌ Número inválido. Debe tener 10 dígitos y empezar en 3.\nEjemplo: 3001234567\n\nUsa /cancelar para reiniciar."); return
             data["telefono"] = tel; data["step"] = 2
             await update.message.reply_text("Ingresa el valor")
         elif step == 2:
@@ -439,37 +477,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["valor"] = v
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Ingresa la referencia\nEjemplo: M12345678"); return
             if fecha_manual_mode.get(user_id): data["step"] = 3; await update.message.reply_text("📅 Ingresa la fecha"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE1_CONFIG)
             if ok:
                 dm = data.copy(); dm["nombre"] = data["nombre"].upper(); dm["valor"] = -abs(v)
                 await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 3:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE1_CONFIG)
             if ok:
                 dm = data.copy(); dm["nombre"] = data["nombre"].upper(); dm["valor"] = -abs(data["valor"])
                 await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 10:
             data["referencia_manual"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 11; await update.message.reply_text("📅 Ingresa la fecha"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE1_CONFIG)
             if ok:
                 dm = data.copy(); dm["nombre"] = data["nombre"].upper(); dm["valor"] = -abs(data["valor"])
                 await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 11:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE1_CONFIG)
             if ok:
                 dm = data.copy(); dm["nombre"] = data["nombre"].upper(); dm["valor"] = -abs(data["valor"])
                 await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
 
     # ── TRANSFIYA ───────────────────────────────────────────────────────────
     elif tipo == "comprobante4":
@@ -486,37 +536,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["valor"] = v
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
             if fecha_manual_mode.get(user_id): data["step"] = 2; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE4_CONFIG)
             if ok:
                 dm2 = {"telefono": data["telefono"], "valor": -abs(v), "nombre": data["telefono"]}
                 await generar_y_enviar(update, generar_comprobante, dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 2:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE4_CONFIG)
             if ok:
                 dm2 = {"telefono": data["telefono"], "valor": -abs(data["valor"]), "nombre": data["telefono"]}
                 await generar_y_enviar(update, generar_comprobante, dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 10:
             data["referencia_manual"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE4_CONFIG)
             if ok:
                 dm2 = {"telefono": data["telefono"], "valor": -abs(data["valor"]), "nombre": data["telefono"]}
                 await generar_y_enviar(update, generar_comprobante, dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 11:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE4_CONFIG)
             if ok:
                 dm2 = {"telefono": data["telefono"], "valor": -abs(data["valor"]), "nombre": data["telefono"]}
                 await generar_y_enviar(update, generar_comprobante, dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
 
     # ── NEQUI QR ────────────────────────────────────────────────────────────
     elif tipo == "comprobante_qr":
@@ -531,37 +593,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["valor"] = v
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
             if fecha_manual_mode.get(user_id): data["step"] = 2; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE_QR_CONFIG)
             if ok:
                 dm = {"nombre": data["nombre"].upper(), "valor": -abs(v)}
                 await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 2:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE_QR_CONFIG)
             if ok:
                 dm = {"nombre": data["nombre"].upper(), "valor": -abs(data["valor"])}
                 await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 10:
             data["referencia_manual"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE_QR_CONFIG)
             if ok:
                 dm = {"nombre": data["nombre"].upper(), "valor": -abs(data["valor"])}
                 await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 11:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante, data, COMPROBANTE_QR_CONFIG)
             if ok:
                 dm = {"nombre": data["nombre"].upper(), "valor": -abs(data["valor"])}
                 await generar_y_enviar(update, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
 
     # ── ANULADO ─────────────────────────────────────────────────────────────
     elif tipo == "comprobante_anulado":
@@ -575,14 +649,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v
             if fecha_manual_mode.get(user_id): data["step"] = 2; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_anulado, data, COMPROBANTE_ANULADO_CONFIG, "ANULADO")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 2:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_anulado, data, COMPROBANTE_ANULADO_CONFIG, "ANULADO")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
 
     # ── AHORROS ─────────────────────────────────────────────────────────────
     elif tipo == "comprobante_ahorros":
@@ -601,14 +681,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v
             if fecha_manual_mode.get(user_id): data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_ahorros, data, COMPROBANTE_AHORROS_CONFIG, "Ahorros")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 3:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_ahorros, data, COMPROBANTE_AHORROS_CONFIG, "Ahorros")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
 
     # ── CORRIENTE ───────────────────────────────────────────────────────────
     elif tipo == "comprobante_corriente":
@@ -627,14 +713,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v
             if fecha_manual_mode.get(user_id): data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_ahorros, data, COMPROBANTE_AHORROS2_CONFIG, "Corriente")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 3:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_ahorros, data, COMPROBANTE_AHORROS2_CONFIG, "Corriente")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
 
     # ── DAVIPLATA ───────────────────────────────────────────────────────────
     elif tipo == "comprobante_daviplata":
@@ -656,14 +748,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not text.isdigit() or len(text) != 4: await update.message.reply_text("4 dígitos exactos"); return
             data["envia"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 4; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_daviplata, data, COMPROBANTE_DAVIPLATA_CONFIG, "Daviplata")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 4:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_daviplata, data, COMPROBANTE_DAVIPLATA_CONFIG, "Daviplata")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
 
     # ── BC A NQ ─────────────────────────────────────────────────────────────
     elif tipo == "comprobante_bc_nq_t":
@@ -679,14 +777,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if v < 1000: await update.message.reply_text("Mínimo $1,000"); return
             data["valor"] = v
             if fecha_manual_mode.get(user_id): data["step"] = 2; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_bc_nq_t, data, COMPROBANTE_BC_NQ_T_CONFIG, "BC a NQ")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 2:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_bc_nq_t, data, COMPROBANTE_BC_NQ_T_CONFIG, "BC a NQ")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
 
     # ── BC QR ────────────────────────────────────────────────────────────────
     elif tipo == "comprobante_bc_qr":
@@ -710,14 +814,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Número de cuenta inválido"); return
             data["numero_cuenta"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 4; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_bc_qr, data, COMPROBANTE_BC_QR_CONFIG, "BC QR")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 4:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_bc_qr, data, COMPROBANTE_BC_QR_CONFIG, "BC QR")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
 
     # ── NEQUI CORRIENTE ─────────────────────────────────────────────────────
     elif tipo == "comprobante_nequi_bc":
@@ -737,25 +847,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["numero_cuenta"] = text
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
             if fecha_manual_mode.get(user_id): data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_nequi_bc, data, COMPROBANTE_NEQUI_BC_CONFIG, "Nequi Corriente")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 3:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_nequi_bc, data, COMPROBANTE_NEQUI_BC_CONFIG, "Nequi Corriente")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 10:
             data["referencia_manual"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_nequi_bc, data, COMPROBANTE_NEQUI_BC_CONFIG, "Nequi Corriente")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 11:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_nequi_bc, data, COMPROBANTE_NEQUI_BC_CONFIG, "Nequi Corriente")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
 
     # ── NEQUI AHORROS ───────────────────────────────────────────────────────
     elif tipo == "comprobante_nequi_ahorros":
@@ -775,25 +897,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["numero_cuenta"] = text
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
             if fecha_manual_mode.get(user_id): data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_nequi_ahorros, data, COMPROBANTE_NEQUI_AHORROS_CONFIG, "Nequi Ahorros")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 3:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_nequi_ahorros, data, COMPROBANTE_NEQUI_AHORROS_CONFIG, "Nequi Ahorros")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 10:
             data["referencia_manual"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_nequi_ahorros, data, COMPROBANTE_NEQUI_AHORROS_CONFIG, "Nequi Ahorros")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 11:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_nequi_ahorros, data, COMPROBANTE_NEQUI_AHORROS_CONFIG, "Nequi Ahorros")
             if ok: await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
 
     # ── BRE B ───────────────────────────────────────────────────────────────
     elif tipo == "comprobante_nuevo":
@@ -820,41 +954,53 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["numero_envia"] = text
             if referencia_manual_mode.get(user_id): data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
             if fecha_manual_mode.get(user_id): data["step"] = 5; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_nuevo, data, COMPROBANTE_NUEVO_CONFIG)
             if ok:
                 await asyncio.sleep(1.5)
                 dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
                 await generar_y_enviar(update, generar_comprobante, dm, MVKEY_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 5:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_nuevo, data, COMPROBANTE_NUEVO_CONFIG)
             if ok:
                 await asyncio.sleep(1.5)
                 dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
                 await generar_y_enviar(update, generar_comprobante, dm, MVKEY_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 10:
             data["referencia_manual"] = text
             if fecha_manual_mode.get(user_id): data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_nuevo, data, COMPROBANTE_NUEVO_CONFIG)
             if ok:
                 await asyncio.sleep(1.5)
                 dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
                 await generar_y_enviar(update, generar_comprobante, dm, MVKEY_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
         elif step == 11:
             data["fecha_manual"] = text
+            msg_espera = await update.message.reply_text("⏳ Generando...")
             ok = await generar_y_enviar(update, generar_comprobante_nuevo, data, COMPROBANTE_NUEVO_CONFIG)
             if ok:
                 await asyncio.sleep(1.5)
                 dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(data["valor"]))}
                 await generar_y_enviar(update, generar_comprobante, dm, MVKEY_CONFIG)
                 await send_success_message(update)
-            del user_data_store[user_id]
+            try: await msg_espera.delete()
+            except: pass
+            limpiar_usuario(user_id)
 
     # ── AGREGAR USUARIO ─────────────────────────────────────────────────────
     elif tipo == "agregar_usuario":
@@ -902,10 +1048,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         text=f"🔔 *Nuevo usuario agregado*\nID: `{data['target_user_id']}`\nNombre: {data['nombre']}\nVence: {fecha_vence}\nPor: {admin_name}",
                         parse_mode='Markdown'
                     )
-                del user_data_store[user_id]
+                limpiar_usuario(user_id)
             except Exception as e:
                 await update.message.reply_text(f"❌ Error: {e}")
-                del user_data_store[user_id]
+                limpiar_usuario(user_id)
 
 
 # ─────────────────────────────────────────────
@@ -1001,7 +1147,7 @@ async def unadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancelar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in user_data_store:
-        del user_data_store[user_id]
+        limpiar_usuario(user_id)
         await update.message.reply_text("✅ Operación cancelada.")
     else:
         await update.message.reply_text("No tienes acciones activas. Usa /comprobante para iniciar.")
@@ -1205,6 +1351,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO,                   handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+    print("🤖 Bot iniciado correctamente.")
     app.run_polling()
 
 if __name__ == "__main__":
