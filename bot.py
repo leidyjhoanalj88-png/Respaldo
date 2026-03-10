@@ -308,12 +308,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
+    # ✅ BLOQUEO DE GRUPOS NO AUTORIZADOS
+    if update.effective_chat.type in ("group", "supergroup"):
+        if chat_id != ALLOWED_GROUP:
+            return  # Ignora el comando en grupos no autorizados
+
     if auth_system.is_banned(user_id):
         await update.message.reply_text("Estás baneado. Contacta al administrador.")
         return
 
-    if not auth_system.can_use_bot(user_id, chat_id):
-        if not auth_system.gratis_mode:
+    # ✅ Admins SIEMPRE tienen acceso, sin importar el modo
+    if not auth_system.is_admin(user_id):
+        if not auth_system.can_use_bot(user_id, chat_id) and not auth_system.gratis_mode:
             await update.message.reply_text(
                 "🔴 *Bot en Modo OFF*\n\n💰 Contacta a un administrador para acceso premium.",
                 parse_mode='Markdown',
@@ -388,6 +394,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     text = update.message.text.strip()
+
+    # ✅ BLOQUEO DE GRUPOS NO AUTORIZADOS
+    # Si el mensaje viene de un grupo que NO es el autorizado, ignorar silenciosamente
+    if update.effective_chat.type in ("group", "supergroup"):
+        if chat_id != ALLOWED_GROUP:
+            return  # Ignora cualquier mensaje en grupos no autorizados
+
     logging.warning(f"[DEBUG] user={user_id} text={repr(text)} store={user_data_store.get(user_id)}")
 
     button_mapping = {
@@ -400,7 +413,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     if text in button_mapping and user_id not in user_data_store:
-        if not auth_system.can_use_bot(user_id, chat_id) and not auth_system.gratis_mode:
+        # ✅ Admins siempre tienen acceso
+        if not auth_system.is_admin(user_id) and not auth_system.can_use_bot(user_id, chat_id) and not auth_system.gratis_mode:
             await update.message.reply_text("🔴 Bot en Modo OFF", reply_markup=admin_keyboard())
             return
         if auth_system.is_banned(user_id):
