@@ -2,24 +2,30 @@ import os
 import sys
 import zipfile
 import signal
-import psutil
+import subprocess
 
 # ══════════════════════════════════════════════════════════════════════════
-# KILL de instancias previas del mismo bot (fix Conflict)
+# KILL de instancias previas del mismo bot (fix Conflict, sin psutil)
 # ══════════════════════════════════════════════════════════════════════════
 def kill_otras_instancias():
     current_pid = os.getpid()
     script_name = os.path.basename(__file__)
-    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-        try:
-            if proc.pid == current_pid:
-                continue
-            cmdline = proc.info.get('cmdline') or []
-            if any(script_name in c for c in cmdline):
-                print(f"⚠️ Matando instancia previa PID={proc.pid}")
-                proc.kill()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
+    try:
+        # Busca todos los procesos python corriendo el mismo script
+        result = subprocess.run(
+            ["pgrep", "-f", script_name],
+            capture_output=True, text=True
+        )
+        for pid_str in result.stdout.strip().splitlines():
+            try:
+                pid = int(pid_str)
+                if pid != current_pid:
+                    print(f"⚠️ Matando instancia previa PID={pid}")
+                    os.kill(pid, signal.SIGKILL)
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+    except Exception as e:
+        print(f"[kill_otras_instancias] {e}")
 
 kill_otras_instancias()
 
@@ -1546,9 +1552,8 @@ def main():
                 espera = min(30, 5 * reintentos)
                 logging.warning(
                     f"⚠️ Conflict detectado (intento {reintentos}/{MAX_REINTENTOS}). "
-                    f"Esperando {espera}s y matando otras instancias..."
+                    f"Esperando {espera}s..."
                 )
-                kill_otras_instancias()
                 time.sleep(espera)
                 if reintentos >= MAX_REINTENTOS:
                     logging.error("❌ Demasiados Conflicts. Abortando.")
