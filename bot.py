@@ -234,24 +234,18 @@ def admin_keyboard():
 # ── Helper global para generar y enviar — limpia estado y muestra error exacto ──
 async def generar_y_enviar(update, fn, data, config, caption=" "):
     """
-    Genera el comprobante en un hilo separado para no bloquear el bot.
+    Genera el comprobante directamente (sin executor para máxima compatibilidad).
     Limpia archivos temporales aunque falle.
     """
     out = None
     try:
-        # ✅ MEJORA: correr la función pesada en un executor para no bloquear
-        loop = asyncio.get_event_loop()
-        out = await asyncio.wait_for(
-            loop.run_in_executor(None, fn, data, config),
-            timeout=30  # ✅ timeout de 30 segundos
-        )
+        # ✅ Llamada directa — más estable con PIL/Pillow y fuentes personalizadas
+        out = fn(data, config)
+        if not out or not os.path.exists(out):
+            raise ValueError(f"La función no generó archivo: {out}")
         with open(out, "rb") as f:
             await update.message.reply_document(document=f, caption=caption)
         return True
-    except asyncio.TimeoutError:
-        logging.error("[ERROR] Timeout generando comprobante")
-        await update.message.reply_text("⏱️ Tardó demasiado. Intenta de nuevo con /comprobante")
-        return False
     except Exception:
         tb = traceback.format_exc()
         logging.error(f"[ERROR COMPROBANTE] {tb}")
@@ -261,7 +255,7 @@ async def generar_y_enviar(update, fn, data, config, caption=" "):
         )
         return False
     finally:
-        # ✅ MEJORA: siempre limpiar el archivo temporal
+        # ✅ Siempre limpiar el archivo temporal, pase lo que pase
         if out and os.path.exists(out):
             try:
                 os.remove(out)
