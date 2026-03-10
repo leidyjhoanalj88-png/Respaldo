@@ -5,6 +5,7 @@ import signal
 import subprocess
 import urllib.request as _urllib_req
 import time as _time
+import unicodedata
 
 # ══════════════════════════════════════════════════════════════════════════
 # FIX CONFLICT: limpiar webhook + sesión previa de Telegram al arrancar
@@ -48,7 +49,6 @@ def kill_otras_instancias():
         print(f"[kill_otras_instancias] {e}")
 
 kill_otras_instancias()
-
 
 # ── Descomprimir fuentes automáticamente ──────────────────────────────────
 if not os.path.exists("fuentes") and os.path.exists("fuentes.zip"):
@@ -118,12 +118,27 @@ VENCIMIENTOS_FILE = "vencimientos.json"
 # ══════════════════════════════════════════════════════════════════════════
 
 def limpiar_valor(text):
-    import unicodedata
+    """Limpia caracteres invisibles, símbolos y separadores de un valor numérico."""
     text = unicodedata.normalize('NFKC', text)
     return (text.strip()
                 .replace(".", "").replace(",", "")
                 .replace(" ", "").replace("$", "")
-                .replace("\xa0", "").replace("\u200b", ""))
+                .replace("\xa0", "").replace("\u200b", "")
+                .replace("\u200c", "").replace("\u200d", "")
+                .replace("\ufeff", "").replace("\u00ad", ""))
+
+def limpiar_telefono(text):
+    """
+    BUG FIX: Limpia el teléfono usando normalización unicode completa
+    para eliminar caracteres invisibles que hacen fallar isdigit().
+    """
+    text = unicodedata.normalize('NFKC', text)
+    # Quitar TODO lo que no sea dígito o + al inicio
+    resultado = ""
+    for ch in text:
+        if ch.isdigit() or (ch == '+' and not resultado):
+            resultado += ch
+    return resultado
 
 def fmt_valor(v):
     return f"${abs(int(v)):,}".replace(",", ".")
@@ -132,6 +147,30 @@ def limpiar_usuario(user_id):
     user_data_store.pop(user_id, None)
     fecha_manual_mode.pop(user_id, None)
     referencia_manual_mode.pop(user_id, None)
+
+def validar_telefono(text):
+    """
+    BUG FIX PRINCIPAL: Valida teléfono colombiano de forma robusta.
+    Acepta: 3001234567, +573001234567, 573001234567
+    Retorna (tel_limpio, es_valido)
+    """
+    tel = limpiar_telefono(text)
+    # Quitar prefijo +57
+    if tel.startswith("+57"):
+        tel = tel[3:]
+    # Quitar prefijo 57 si queda con 12 dígitos
+    elif tel.startswith("57") and len(tel) == 12:
+        tel = tel[2:]
+    # Quitar prefijo 57 si queda con 11 dígitos (caso borde)
+    elif tel.startswith("57") and len(tel) == 12:
+        tel = tel[2:]
+
+    es_valido = (
+        tel.isdigit() and
+        len(tel) == 10 and
+        tel.startswith("3")
+    )
+    return tel, es_valido
 
 def parsear_qr_emv(contenido):
     try:
@@ -382,15 +421,15 @@ def construir_resumen(data, tipo):
         "━━━━━━━━━━━━━━━━━",
         f"📌 {tipo_nombres.get(tipo, tipo)}"
     ]
-    if "nombre"        in data: lineas.append(f"👤 Nombre: {data['nombre']}")
-    if "telefono"      in data: lineas.append(f"📱 Teléfono: {data['telefono']}")
-    if "numero_cuenta" in data: lineas.append(f"🏦 Cuenta: {data['numero_cuenta']}")
+    if "nombre"         in data: lineas.append(f"👤 Nombre: {data['nombre']}")
+    if "telefono"       in data: lineas.append(f"📱 Teléfono: {data['telefono']}")
+    if "numero_cuenta"  in data: lineas.append(f"🏦 Cuenta: {data['numero_cuenta']}")
     if "descripcion_qr" in data: lineas.append(f"📲 QR: {data['descripcion_qr']}")
-    if "llave"         in data: lineas.append(f"🔑 Llave: {data['llave']}")
-    if "banco"         in data: lineas.append(f"🏛️ Banco: {data['banco']}")
-    if "numero_envia"  in data: lineas.append(f"📞 Núm. envía: {data['numero_envia']}")
-    if "recibe"        in data: lineas.append(f"📤 Cuenta envía: ****{data['recibe']}")
-    if "envia"         in data: lineas.append(f"📥 Cuenta recibe: ****{data['envia']}")
+    if "llave"          in data: lineas.append(f"🔑 Llave: {data['llave']}")
+    if "banco"          in data: lineas.append(f"🏛️ Banco: {data['banco']}")
+    if "numero_envia"   in data: lineas.append(f"📞 Núm. envía: {data['numero_envia']}")
+    if "recibe"         in data: lineas.append(f"📤 Cuenta envía: ****{data['recibe']}")
+    if "envia"          in data: lineas.append(f"📥 Cuenta recibe: ****{data['envia']}")
     lineas.append(f"💰 Valor: {fmt_valor(v)}")
     lineas.append(f"📅 Fecha: {'Manual: ' + data['fecha_manual'] if data.get('fecha_manual') else 'Automática'}")
     lineas.append(f"🔢 Ref: {'Manual: ' + data['referencia_manual'] if data.get('referencia_manual') else 'Automática'}")
@@ -613,14 +652,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data_store[user_id] = {"step": 0, "tipo": tipo}
         prompts = {
             "comprobante1":          "👤 ¿Nombre del destinatario?",
-            "comprobante4":          "📱 ¿Número a transferir? (10 dígitos)",
+            "comprobante4":          "📱 ¿Número a transferir? (10 dígitos, empieza en 3)",
             "comprobante_qr":        "🏪 ¿Nombre del negocio?",
             "comprobante_nuevo":     "👤 ¿Nombre del destinatario?",
             "comprobante_anulado":   "👤 ¿Nombre?",
             "comprobante_corriente": "👤 ¿Nombre?",
             "comprobante_daviplata": "👤 ¿Nombre de quien envía?",
             "comprobante_ahorros":   "👤 ¿Nombre?",
-            "comprobante_bc_nq_t":   "📱 ¿Número de teléfono? (10 dígitos)",
+            "comprobante_bc_nq_t":   "📱 ¿Número de teléfono? (10 dígitos, empieza en 3)",
             "comprobante_bc_qr":     "📲 ¿Descripción del QR?",
             "comprobante_nequi_bc":  "👤 ¿Nombre?",
             "comprobante_nequi_ahorros": "👤 ¿Nombre?",
@@ -720,13 +759,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if step == 0:
             data["nombre"] = text
             data["step"]   = 1
-            await update.message.reply_text("📱 Número de teléfono (10 dígitos, empieza en 3):")
+            await update.message.reply_text("📱 Número de teléfono (10 dígitos, empieza en 3):\nEjemplo: 3001234567")
         elif step == 1:
-            tel = text.strip().replace(" ", "").replace("-", "")
-            if tel.startswith("+57"):   tel = tel[3:]
-            elif tel.startswith("57") and len(tel) == 12: tel = tel[2:]
-            if not tel.isdigit() or len(tel) != 10 or not tel.startswith("3"):
-                await update.message.reply_text("❌ Número inválido. Debe tener 10 dígitos y empezar en 3.\nEjemplo: 3001234567\n\n/cancelar para reiniciar")
+            # BUG FIX: Usar validar_telefono() con normalización unicode completa
+            tel, es_valido = validar_telefono(text)
+            if not es_valido:
+                await update.message.reply_text(
+                    "❌ Número inválido. Debe tener 10 dígitos y empezar en 3.\n"
+                    "Ejemplo: 3001234567\n\n"
+                    "/cancelar para reiniciar"
+                )
                 return
             data["telefono"] = tel
             data["step"]     = 2
@@ -767,9 +809,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── TRANSFIYA ─────────────────────────────────────────────────────────
     elif tipo == "comprobante4":
         if step == 0:
-            tel = text.strip().replace(" ", "").replace("-", "")
-            if not tel.isdigit() or len(tel) != 10 or not tel.startswith('3'):
-                await update.message.reply_text("❌ Número inválido. 10 dígitos, empieza en 3.\n/cancelar para reiniciar")
+            # BUG FIX: Usar validar_telefono() con normalización unicode completa
+            tel, es_valido = validar_telefono(text)
+            if not es_valido:
+                await update.message.reply_text(
+                    "❌ Número inválido. Debe tener 10 dígitos y empezar en 3.\n"
+                    "Ejemplo: 3001234567\n\n"
+                    "/cancelar para reiniciar"
+                )
                 return
             data["telefono"] = tel
             data["step"]     = 1
@@ -882,7 +929,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(digitos) != 11:
                 await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos")
                 return
-            data["numero_cuenta"] = text
+            data["numero_cuenta"] = digitos  # BUG FIX: guardar solo dígitos para consistencia
             data["step"]          = 2
             await update.message.reply_text("💰 Valor:")
         elif step == 2:
@@ -915,7 +962,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(digitos) != 11:
                 await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos")
                 return
-            data["numero_cuenta"] = text
+            data["numero_cuenta"] = digitos  # BUG FIX: guardar solo dígitos para consistencia
             data["step"]          = 2
             await update.message.reply_text("💰 Valor:")
         elif step == 2:
@@ -956,17 +1003,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["step"]  = 2
             await update.message.reply_text("📤 Últimos 4 dígitos de la cuenta que ENVÍA:")
         elif step == 2:
-            if not text.isdigit() or len(text) != 4:
+            digitos = "".join(ch for ch in text if ch.isdigit())
+            if len(digitos) != 4:
                 await update.message.reply_text("❌ Ingresa exactamente 4 dígitos")
                 return
-            data["recibe"] = text
+            data["recibe"] = digitos  # BUG FIX: guardar solo dígitos
             data["step"]   = 3
             await update.message.reply_text("📥 Últimos 4 dígitos de la cuenta que RECIBE:")
         elif step == 3:
-            if not text.isdigit() or len(text) != 4:
+            digitos = "".join(ch for ch in text if ch.isdigit())
+            if len(digitos) != 4:
                 await update.message.reply_text("❌ Ingresa exactamente 4 dígitos")
                 return
-            data["envia"] = text
+            data["envia"] = digitos  # BUG FIX: guardar solo dígitos
             if fecha_manual_mode.get(user_id):
                 data["step"] = 4
                 await update.message.reply_text("📅 Ingresa la fecha:")
@@ -979,9 +1028,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── BC A NQ ───────────────────────────────────────────────────────────
     elif tipo == "comprobante_bc_nq_t":
         if step == 0:
-            tel = text.strip().replace(" ", "").replace("-", "")
-            if not tel.isdigit() or len(tel) != 10 or not tel.startswith('3'):
-                await update.message.reply_text("❌ Número inválido. 10 dígitos, empieza en 3.\n/cancelar para reiniciar")
+            # BUG FIX: Usar validar_telefono() con normalización unicode completa
+            tel, es_valido = validar_telefono(text)
+            if not es_valido:
+                await update.message.reply_text(
+                    "❌ Número inválido. Debe tener 10 dígitos y empezar en 3.\n"
+                    "Ejemplo: 3001234567\n\n"
+                    "/cancelar para reiniciar"
+                )
                 return
             data["telefono"] = tel
             data["step"]     = 1
@@ -1032,7 +1086,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(digitos) < 8:
                 await update.message.reply_text("❌ Número de cuenta inválido")
                 return
-            data["numero_cuenta"] = text
+            data["numero_cuenta"] = digitos  # BUG FIX: guardar solo dígitos
             if fecha_manual_mode.get(user_id):
                 data["step"] = 4
                 await update.message.reply_text("📅 Ingresa la fecha:")
@@ -1065,7 +1119,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(digitos) != 11:
                 await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos")
                 return
-            data["numero_cuenta"] = text
+            data["numero_cuenta"] = digitos  # BUG FIX: guardar solo dígitos
             if referencia_manual_mode.get(user_id):
                 data["step"] = 10
                 await update.message.reply_text("🔢 Ingresa la referencia:")
@@ -1112,7 +1166,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(digitos) != 11:
                 await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos")
                 return
-            data["numero_cuenta"] = text
+            data["numero_cuenta"] = digitos  # BUG FIX: guardar solo dígitos
             if referencia_manual_mode.get(user_id):
                 data["step"] = 10
                 await update.message.reply_text("🔢 Ingresa la referencia:")
@@ -1162,11 +1216,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif step == 3:
             data["banco"] = text
             data["step"]  = 4
-            await update.message.reply_text("📞 Número de quien envía (10 dígitos):")
+            await update.message.reply_text("📞 Número de quien envía (10 dígitos, empieza en 3):")
         elif step == 4:
-            tel = text.strip().replace(" ", "").replace("-", "")
-            if not tel.isdigit() or len(tel) != 10 or not tel.startswith('3'):
-                await update.message.reply_text("❌ Número inválido. 10 dígitos, empieza en 3.\n/cancelar para reiniciar")
+            # BUG FIX: Usar validar_telefono() con normalización unicode completa
+            tel, es_valido = validar_telefono(text)
+            if not es_valido:
+                await update.message.reply_text(
+                    "❌ Número inválido. Debe tener 10 dígitos y empezar en 3.\n"
+                    "Ejemplo: 3001234567\n\n"
+                    "/cancelar para reiniciar"
+                )
                 return
             data["numero_envia"] = tel
             if referencia_manual_mode.get(user_id):
@@ -1431,11 +1490,11 @@ async def refe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo      = update.message.reply_to_message.photo[-1]
         referencias = cargar_referencias()
         nueva = {
-            "file_id":     photo.file_id,
+            "file_id":      photo.file_id,
             "guardado_por": update.effective_user.first_name or "Admin",
-            "user_id":     user_id,
-            "fecha":       datetime.now(pytz.timezone("America/Bogota")).strftime("%d/%m/%Y %H:%M:%S"),
-            "numero":      len(referencias) + 1
+            "user_id":      user_id,
+            "fecha":        datetime.now(pytz.timezone("America/Bogota")).strftime("%d/%m/%Y %H:%M:%S"),
+            "numero":       len(referencias) + 1
         }
         referencias.append(nueva)
         guardar_referencias(referencias)
