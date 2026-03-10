@@ -58,7 +58,7 @@ import urllib.parse
 logging.basicConfig(level=logging.DEBUG)
 
 # ── CONFIGURACIÓN PRINCIPAL ───────────────────────────────────────────────
-BOT_TOKEN         = "8233192501:AAE91QmDUC9tmCc75TlDsdP5v8v_s7Eagxc"  # ✅ TOKEN ACTUALIZADO
+BOT_TOKEN         = "8069968534:AAFDKtsi4oIbW-t5Bn-UcR_Sf4DXyWbF9E0"  # ✅ TOKEN ACTUALIZADO
 ADMIN_ID          = 7422843477                  # ✅ ACTUALIZADO
 ALLOWED_GROUP     = -1003512376124              # ✅ ACTUALIZADO
 REQUIRED_GROUP_ID = -1003512376124              # ✅ ACTUALIZADO
