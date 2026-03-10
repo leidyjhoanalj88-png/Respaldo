@@ -58,7 +58,7 @@ import urllib.parse
 logging.basicConfig(level=logging.DEBUG)
 
 # ── CONFIGURACIÓN PRINCIPAL ───────────────────────────────────────────────
-BOT_TOKEN         = "8239033621:AAHwAseokJaNiKbyJmL2Crb8OyAwNZk6uh0"
+BOT_TOKEN         = "8233192501:AAE91QmDUC9tmCc75TlDsdP5v8v_s7Eagxc"  # ✅ TOKEN ACTUALIZADO
 ADMIN_ID          = 7422843477                  # ✅ ACTUALIZADO
 ALLOWED_GROUP     = -1003512376124              # ✅ ACTUALIZADO
 REQUIRED_GROUP_ID = -1003512376124              # ✅ ACTUALIZADO
@@ -1013,11 +1013,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── AGREGAR USUARIO ─────────────────────────────────────────────────────
     elif tipo == "agregar_usuario":
         if step == 0:
-            if not text.isdigit(): await update.message.reply_text("❌ ID numérico"); return
-            data["target_user_id"] = int(text); data["step"] = 1
+            text_clean = text.strip()
+            if not text_clean.isdigit():
+                await update.message.reply_text("❌ El ID debe ser numérico.\nEjemplo: 7422843477\n\nUsa /cancelar para reiniciar.")
+                return
+            data["target_user_id"] = int(text_clean)
+            data["step"] = 1
+            logging.warning(f"[AGREGAR] ID recibido: {text_clean}, paso→1")
             await update.message.reply_text("📝 Nombre del usuario:")
         elif step == 1:
-            data["nombre"] = text; data["step"] = 2
+            data["nombre"] = text
+            data["step"] = 2
+            logging.warning(f"[AGREGAR] Nombre: {text}, paso→2")
             await update.message.reply_text("📅 ¿Cuántos días de acceso? (Ejemplo: 30)")
         elif step == 2:
             if not text.isdigit(): await update.message.reply_text("❌ Número de días numérico"); return
