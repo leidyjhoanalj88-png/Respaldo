@@ -3,15 +3,35 @@ import sys
 import zipfile
 import signal
 import subprocess
+import urllib.request as _urllib_req
+import time as _time
 
 # ══════════════════════════════════════════════════════════════════════════
-# KILL de instancias previas del mismo bot (fix Conflict, sin psutil)
+# FIX CONFLICT: limpiar webhook + sesión previa de Telegram al arrancar
 # ══════════════════════════════════════════════════════════════════════════
+_BOT_TOKEN_INIT = "8069968534:AAFDKtsi4oIbW-t5Bn-UcR_Sf4DXyWbF9E0"
+
+def limpiar_sesion_telegram():
+    """Borra webhook y cierra sesión previa para evitar el error Conflict."""
+    base = f"https://api.telegram.org/bot{_BOT_TOKEN_INIT}"
+    for i in range(3):
+        try:
+            _urllib_req.urlopen(f"{base}/deleteWebhook?drop_pending_updates=true", timeout=10)
+            _urllib_req.urlopen(f"{base}/close", timeout=10)
+            print("✅ Sesión anterior cerrada. Esperando 5s...")
+            _time.sleep(5)
+            return
+        except Exception as e:
+            print(f"[limpiar_sesion] intento {i+1}: {e}")
+            _time.sleep(2)
+
+limpiar_sesion_telegram()
+
+# ── Kill procesos locales duplicados ──────────────────────────────────────
 def kill_otras_instancias():
     current_pid = os.getpid()
     script_name = os.path.basename(__file__)
     try:
-        # Busca todos los procesos python corriendo el mismo script
         result = subprocess.run(
             ["pgrep", "-f", script_name],
             capture_output=True, text=True
@@ -28,6 +48,7 @@ def kill_otras_instancias():
         print(f"[kill_otras_instancias] {e}")
 
 kill_otras_instancias()
+
 
 # ── Descomprimir fuentes automáticamente ──────────────────────────────────
 if not os.path.exists("fuentes") and os.path.exists("fuentes.zip"):
