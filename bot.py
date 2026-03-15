@@ -704,6 +704,23 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════════════════════════
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # FIX CRÍTICO: try/except global — si algo falla el bot nunca queda mudo
+    try:
+        await _handle_message_inner(update, context)
+    except Exception:
+        logging.error(f"[handle_message] Error fatal:\n{traceback.format_exc()}")
+        user_id = update.effective_user.id
+        limpiar_usuario(user_id)
+        try:
+            await update.message.reply_text(
+                "⚠️ Ocurrió un error inesperado. Usa /comprobante para intentar de nuevo.",
+                reply_markup=main_keyboard()
+            )
+        except Exception:
+            pass
+
+
+async def _handle_message_inner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     text    = update.message.text.strip()
