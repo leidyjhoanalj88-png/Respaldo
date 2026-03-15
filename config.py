@@ -1,5 +1,5 @@
 COMPROBANTE1_CONFIG = {
-    "template": "plantil la1.jpg",
+    "template": "plantilla1.jpg",  # FIX: eliminado espacio "plantil la1.jpg"
     "output": "comprobante1_generado.png",
     "styles": {
         "nombre": {"size": 22, "color": "#200021", "pos": (50, 605)},
