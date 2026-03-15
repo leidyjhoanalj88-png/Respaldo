@@ -105,10 +105,15 @@ ALLOWED_GROUP     = -1003512376124
 REQUIRED_GROUP_ID = -1003512376124
 GROUP_LINK        = "https://t.me/nequixxx"
 
+# Timeout de sesión: 10 minutos sin actividad = limpiar
+SESSION_TIMEOUT_SECONDS = 600
+
 auth_system = AuthSystem(ADMIN_ID, ALLOWED_GROUP)
 user_data_store = {}
 fecha_manual_mode = {}
 referencia_manual_mode = {}
+# FIX: Rastrear timestamp de última actividad para limpiar sesiones colgadas
+user_last_activity = {}
 REFERENCIAS_FILE = "referencias.json"
 VENCIMIENTOS_FILE = "vencimientos.json"
 
@@ -128,12 +133,7 @@ def limpiar_valor(text):
                 .replace("\ufeff", "").replace("\u00ad", ""))
 
 def limpiar_telefono(text):
-    """
-    BUG FIX: Limpia el teléfono usando normalización unicode completa
-    para eliminar caracteres invisibles que hacen fallar isdigit().
-    """
     text = unicodedata.normalize('NFKC', text)
-    # Quitar TODO lo que no sea dígito o + al inicio
     resultado = ""
     for ch in text:
         if ch.isdigit() or (ch == '+' and not resultado):
@@ -147,21 +147,16 @@ def limpiar_usuario(user_id):
     user_data_store.pop(user_id, None)
     fecha_manual_mode.pop(user_id, None)
     referencia_manual_mode.pop(user_id, None)
+    user_last_activity.pop(user_id, None)
+
+def actualizar_actividad(user_id):
+    """FIX: Registrar timestamp de última actividad."""
+    user_last_activity[user_id] = _time.time()
 
 def validar_telefono(text):
-    """
-    BUG FIX PRINCIPAL: Valida teléfono colombiano de forma robusta.
-    Acepta: 3001234567, +573001234567, 573001234567
-    Retorna (tel_limpio, es_valido)
-    """
     tel = limpiar_telefono(text)
-    # Quitar prefijo +57
     if tel.startswith("+57"):
         tel = tel[3:]
-    # Quitar prefijo 57 si queda con 12 dígitos
-    elif tel.startswith("57") and len(tel) == 12:
-        tel = tel[2:]
-    # Quitar prefijo 57 si queda con 11 dígitos (caso borde)
     elif tel.startswith("57") and len(tel) == 12:
         tel = tel[2:]
 
@@ -215,6 +210,29 @@ def extraer_nombre_qr(contenido):
         except Exception:
             pass
     return contenido[:40].strip()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# FIX: JOB para limpiar sesiones colgadas automáticamente
+# ══════════════════════════════════════════════════════════════════════════
+
+async def limpiar_sesiones_colgadas(context: ContextTypes.DEFAULT_TYPE):
+    """Limpia sesiones que llevan más de SESSION_TIMEOUT_SECONDS sin actividad."""
+    ahora = _time.time()
+    usuarios_a_limpiar = []
+    for uid, ts in list(user_last_activity.items()):
+        if ahora - ts > SESSION_TIMEOUT_SECONDS:
+            usuarios_a_limpiar.append(uid)
+    for uid in usuarios_a_limpiar:
+        logging.info(f"[TIMEOUT] Limpiando sesión colgada del usuario {uid}")
+        limpiar_usuario(uid)
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text="⏰ Tu sesión expiró por inactividad.\nUsa /comprobante para comenzar de nuevo."
+            )
+        except Exception:
+            pass
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -337,11 +355,32 @@ def main_keyboard():
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# VERIFICACIÓN DE ACCESO (helper reutilizable)
+# FIX: VERIFICACIÓN DE MEMBRESÍA MEJORADA
 # ══════════════════════════════════════════════════════════════════════════
 
+async def verificar_membresia_grupo(context, user_id: int) -> bool:
+    """
+    FIX: Verifica que el usuario esté en el grupo requerido via API de Telegram.
+    Retorna True si está en el grupo, False si no.
+    """
+    try:
+        member = await context.bot.get_chat_member(
+            chat_id=REQUIRED_GROUP_ID,
+            user_id=user_id
+        )
+        # Estados válidos de membresía
+        return member.status in ("member", "administrator", "creator", "restricted")
+    except Exception as e:
+        logging.warning(f"[MEMBRESIA] No se pudo verificar al usuario {user_id}: {e}")
+        # Si falla la verificación (ej: bot no está en el grupo), permitir acceso
+        return True
+
+
 async def verificar_acceso(update: Update, context) -> bool:
-    """Retorna True si el usuario puede usar el bot, False si no."""
+    """
+    FIX MEJORADO: Verifica acceso con membresía real al grupo.
+    Retorna True si el usuario puede usar el bot, False si no.
+    """
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
@@ -351,6 +390,20 @@ async def verificar_acceso(update: Update, context) -> bool:
 
     if auth_system.is_admin(user_id):
         return True
+
+    # FIX: Verificar membresía real en el grupo
+    en_grupo = await verificar_membresia_grupo(context, user_id)
+    if not en_grupo:
+        await update.message.reply_text(
+            "⛔ *Debes estar en el grupo para usar el bot.*\n\n"
+            "📢 Únete aquí:",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📢 Unirme al Grupo", url=GROUP_LINK)],
+                [InlineKeyboardButton("👑 Contactar ADM", url="tg://user?id=7422843477")]
+            ])
+        )
+        return False
 
     if auth_system.gratis_mode or auth_system.can_use_bot(user_id, chat_id):
         return True
@@ -439,6 +492,7 @@ def construir_resumen(data, tipo):
 
 async def mostrar_confirmacion(update, user_id, data, tipo):
     data["_pendiente"] = True
+    actualizar_actividad(user_id)
     await update.message.reply_text(
         construir_resumen(data, tipo),
         parse_mode="Markdown",
@@ -447,6 +501,9 @@ async def mostrar_confirmacion(update, user_id, data, tipo):
 
 
 async def ejecutar_generacion(chat_id, context, user_id):
+    """
+    FIX: Envuelto en try/except global para que nunca quede la sesión colgada.
+    """
     if user_id not in user_data_store:
         await context.bot.send_message(chat_id=chat_id, text="❌ Sesión expirada. Usa /comprobante")
         return
@@ -454,68 +511,92 @@ async def ejecutar_generacion(chat_id, context, user_id):
     tipo = data["tipo"]
     v    = data.get("valor", 0)
 
-    await context.bot.send_message(chat_id=chat_id, text="⏳ Generando comprobante...")
-    ok = False
+    # FIX: limpiar _pendiente antes de generar para evitar bloqueo
+    data.pop("_pendiente", None)
 
-    if tipo == "comprobante1":
-        ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, data, COMPROBANTE1_CONFIG)
+    try:
+        await context.bot.send_message(chat_id=chat_id, text="⏳ Generando comprobante...")
+        ok = False
+
+        if tipo == "comprobante1":
+            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, data, COMPROBANTE1_CONFIG)
+            if ok:
+                dm = data.copy()
+                dm["nombre"] = data["nombre"].upper()
+                dm["valor"]  = -abs(v)
+                await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO_CONFIG)
+
+        elif tipo == "comprobante4":
+            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, data, COMPROBANTE4_CONFIG)
+            if ok:
+                dm2 = {"telefono": data["telefono"], "valor": -abs(v), "nombre": data["telefono"]}
+                await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
+
+        elif tipo == "comprobante_qr":
+            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, data, COMPROBANTE_QR_CONFIG)
+            if ok:
+                dm = {"nombre": data["nombre"].upper(), "valor": -abs(v)}
+                await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
+
+        elif tipo == "comprobante_anulado":
+            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_anulado, data, COMPROBANTE_ANULADO_CONFIG, "ANULADO")
+
+        elif tipo == "comprobante_ahorros":
+            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_ahorros, data, COMPROBANTE_AHORROS_CONFIG, "Ahorros")
+
+        elif tipo == "comprobante_corriente":
+            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_ahorros, data, COMPROBANTE_AHORROS2_CONFIG, "Corriente")
+
+        elif tipo == "comprobante_daviplata":
+            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_daviplata, data, COMPROBANTE_DAVIPLATA_CONFIG, "Daviplata")
+
+        elif tipo == "comprobante_bc_nq_t":
+            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_bc_nq_t, data, COMPROBANTE_BC_NQ_T_CONFIG, "BC a NQ")
+
+        elif tipo == "comprobante_bc_qr":
+            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_bc_qr, data, COMPROBANTE_BC_QR_CONFIG, "BC QR")
+
+        elif tipo == "comprobante_nequi_bc":
+            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_nequi_bc, data, COMPROBANTE_NEQUI_BC_CONFIG, "Nequi Corriente")
+
+        elif tipo == "comprobante_nequi_ahorros":
+            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_nequi_ahorros, data, COMPROBANTE_NEQUI_AHORROS_CONFIG, "Nequi Ahorros")
+
+        elif tipo == "comprobante_nuevo":
+            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_nuevo, data, COMPROBANTE_NUEVO_CONFIG)
+            if ok:
+                await asyncio.sleep(1.5)
+                dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(v))}
+                await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, dm, MVKEY_CONFIG)
+
         if ok:
-            dm = data.copy()
-            dm["nombre"] = data["nombre"].upper()
-            dm["valor"]  = -abs(v)
-            await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO_CONFIG)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="✅ *Comprobante generado con éxito*\n\nUsa /comprobante para generar otro",
+                parse_mode='Markdown',
+                reply_markup=main_keyboard()
+            )
+        else:
+            # FIX: Si falló, avisar al usuario para que pueda reintentar
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ No se pudo generar el comprobante.\nUsa /comprobante para intentar de nuevo.",
+                reply_markup=main_keyboard()
+            )
 
-    elif tipo == "comprobante4":
-        ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, data, COMPROBANTE4_CONFIG)
-        if ok:
-            dm2 = {"telefono": data["telefono"], "valor": -abs(v), "nombre": data["telefono"]}
-            await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
-
-    elif tipo == "comprobante_qr":
-        ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, data, COMPROBANTE_QR_CONFIG)
-        if ok:
-            dm = {"nombre": data["nombre"].upper(), "valor": -abs(v)}
-            await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
-
-    elif tipo == "comprobante_anulado":
-        ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_anulado, data, COMPROBANTE_ANULADO_CONFIG, "ANULADO")
-
-    elif tipo == "comprobante_ahorros":
-        ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_ahorros, data, COMPROBANTE_AHORROS_CONFIG, "Ahorros")
-
-    elif tipo == "comprobante_corriente":
-        ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_ahorros, data, COMPROBANTE_AHORROS2_CONFIG, "Corriente")
-
-    elif tipo == "comprobante_daviplata":
-        ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_daviplata, data, COMPROBANTE_DAVIPLATA_CONFIG, "Daviplata")
-
-    elif tipo == "comprobante_bc_nq_t":
-        ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_bc_nq_t, data, COMPROBANTE_BC_NQ_T_CONFIG, "BC a NQ")
-
-    elif tipo == "comprobante_bc_qr":
-        ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_bc_qr, data, COMPROBANTE_BC_QR_CONFIG, "BC QR")
-
-    elif tipo == "comprobante_nequi_bc":
-        ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_nequi_bc, data, COMPROBANTE_NEQUI_BC_CONFIG, "Nequi Corriente")
-
-    elif tipo == "comprobante_nequi_ahorros":
-        ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_nequi_ahorros, data, COMPROBANTE_NEQUI_AHORROS_CONFIG, "Nequi Ahorros")
-
-    elif tipo == "comprobante_nuevo":
-        ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_nuevo, data, COMPROBANTE_NUEVO_CONFIG)
-        if ok:
-            await asyncio.sleep(1.5)
-            dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(v))}
-            await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, dm, MVKEY_CONFIG)
-
-    if ok:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="✅ *Comprobante generado con éxito*\n\nUsa /comprobante para generar otro",
-            parse_mode='Markdown',
-            reply_markup=main_keyboard()
-        )
-    limpiar_usuario(user_id)
+    except Exception as e:
+        logging.error(f"[ejecutar_generacion] Error fatal: {traceback.format_exc()}")
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ Error inesperado al generar.\nUsa /comprobante para intentar de nuevo.",
+                reply_markup=main_keyboard()
+            )
+        except Exception:
+            pass
+    finally:
+        # FIX CRÍTICO: SIEMPRE limpiar la sesión al final, pase lo que pase
+        limpiar_usuario(user_id)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -536,6 +617,11 @@ async def confirmar_generacion_callback(update: Update, context: ContextTypes.DE
     if action == "no":
         limpiar_usuario(user_id)
         await query.edit_message_text("❌ Cancelado.\n\nUsa /comprobante para empezar de nuevo.")
+        return
+
+    # FIX: Verificar que la sesión todavía exista antes de procesar
+    if user_id not in user_data_store:
+        await query.edit_message_text("⏰ Sesión expirada. Usa /comprobante para empezar de nuevo.")
         return
 
     await query.edit_message_text("✅ Confirmado, procesando...")
@@ -561,12 +647,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
-    # Solo responder en grupo permitido o en privado
     if update.effective_chat.type in ("group", "supergroup") and chat_id != ALLOWED_GROUP:
         return
 
     if not await verificar_acceso(update, context):
         return
+
+    # FIX: Limpiar sesión anterior si existe al iniciar nuevo comprobante
+    limpiar_usuario(user_id)
 
     await update.message.reply_text(
         "✅ Selecciona el tipo de comprobante:",
@@ -580,7 +668,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await verificar_acceso(update, context):
         return
 
-    # Si ya tiene una sesión activa, ignorar foto
     if user_id in user_data_store:
         await update.message.reply_text("⏳ Ya tienes una operación en curso. Usa /cancelar para reiniciar.")
         return
@@ -601,6 +688,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         nombre_negocio = extraer_nombre_qr(contenido)[:30].strip()
         user_data_store[user_id] = {"step": "qr_monto", "tipo": "comprobante_qr", "nombre": nombre_negocio}
+        actualizar_actividad(user_id)
         await update.message.reply_text(
             f"✅ *QR leído*\n\n🏪 *Negocio:* {nombre_negocio}\n\n💰 ¿Cuánto es el monto?",
             parse_mode="Markdown"
@@ -620,7 +708,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text    = update.message.text.strip()
 
-    # Ignorar mensajes de otros grupos
     if update.effective_chat.type in ("group", "supergroup") and chat_id != ALLOWED_GROUP:
         return
 
@@ -647,9 +734,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text in button_mapping:
         if not await verificar_acceso(update, context):
             return
+        # FIX: Limpiar sesión anterior al seleccionar nuevo tipo
         limpiar_usuario(user_id)
         tipo = button_mapping[text]
         user_data_store[user_id] = {"step": 0, "tipo": tipo}
+        actualizar_actividad(user_id)
         prompts = {
             "comprobante1":          "👤 ¿Nombre del destinatario?",
             "comprobante4":          "📱 ¿Número a transferir? (10 dígitos, empieza en 3)",
@@ -679,6 +768,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ El mínimo es $1,000")
             return
         data["valor"] = valor
+        actualizar_actividad(user_id)
         await mostrar_confirmacion(update, user_id, data, data["tipo"])
         return
 
@@ -689,6 +779,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = user_data_store[user_id]
     tipo = data["tipo"]
     step = data["step"]
+
+    # FIX: Actualizar actividad en cada mensaje
+    actualizar_actividad(user_id)
 
     # Esperando confirmación de botones
     if data.get("_pendiente"):
@@ -761,7 +854,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["step"]   = 1
             await update.message.reply_text("📱 Número de teléfono (10 dígitos, empieza en 3):\nEjemplo: 3001234567")
         elif step == 1:
-            # BUG FIX: Usar validar_telefono() con normalización unicode completa
             tel, es_valido = validar_telefono(text)
             if not es_valido:
                 await update.message.reply_text(
@@ -809,7 +901,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── TRANSFIYA ─────────────────────────────────────────────────────────
     elif tipo == "comprobante4":
         if step == 0:
-            # BUG FIX: Usar validar_telefono() con normalización unicode completa
             tel, es_valido = validar_telefono(text)
             if not es_valido:
                 await update.message.reply_text(
@@ -929,7 +1020,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(digitos) != 11:
                 await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos")
                 return
-            data["numero_cuenta"] = digitos  # BUG FIX: guardar solo dígitos para consistencia
+            data["numero_cuenta"] = digitos
             data["step"]          = 2
             await update.message.reply_text("💰 Valor:")
         elif step == 2:
@@ -962,7 +1053,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(digitos) != 11:
                 await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos")
                 return
-            data["numero_cuenta"] = digitos  # BUG FIX: guardar solo dígitos para consistencia
+            data["numero_cuenta"] = digitos
             data["step"]          = 2
             await update.message.reply_text("💰 Valor:")
         elif step == 2:
@@ -1007,7 +1098,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(digitos) != 4:
                 await update.message.reply_text("❌ Ingresa exactamente 4 dígitos")
                 return
-            data["recibe"] = digitos  # BUG FIX: guardar solo dígitos
+            data["recibe"] = digitos
             data["step"]   = 3
             await update.message.reply_text("📥 Últimos 4 dígitos de la cuenta que RECIBE:")
         elif step == 3:
@@ -1015,7 +1106,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(digitos) != 4:
                 await update.message.reply_text("❌ Ingresa exactamente 4 dígitos")
                 return
-            data["envia"] = digitos  # BUG FIX: guardar solo dígitos
+            data["envia"] = digitos
             if fecha_manual_mode.get(user_id):
                 data["step"] = 4
                 await update.message.reply_text("📅 Ingresa la fecha:")
@@ -1028,7 +1119,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── BC A NQ ───────────────────────────────────────────────────────────
     elif tipo == "comprobante_bc_nq_t":
         if step == 0:
-            # BUG FIX: Usar validar_telefono() con normalización unicode completa
             tel, es_valido = validar_telefono(text)
             if not es_valido:
                 await update.message.reply_text(
@@ -1086,7 +1176,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(digitos) < 8:
                 await update.message.reply_text("❌ Número de cuenta inválido")
                 return
-            data["numero_cuenta"] = digitos  # BUG FIX: guardar solo dígitos
+            data["numero_cuenta"] = digitos
             if fecha_manual_mode.get(user_id):
                 data["step"] = 4
                 await update.message.reply_text("📅 Ingresa la fecha:")
@@ -1119,7 +1209,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(digitos) != 11:
                 await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos")
                 return
-            data["numero_cuenta"] = digitos  # BUG FIX: guardar solo dígitos
+            data["numero_cuenta"] = digitos
             if referencia_manual_mode.get(user_id):
                 data["step"] = 10
                 await update.message.reply_text("🔢 Ingresa la referencia:")
@@ -1166,7 +1256,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(digitos) != 11:
                 await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos")
                 return
-            data["numero_cuenta"] = digitos  # BUG FIX: guardar solo dígitos
+            data["numero_cuenta"] = digitos
             if referencia_manual_mode.get(user_id):
                 data["step"] = 10
                 await update.message.reply_text("🔢 Ingresa la referencia:")
@@ -1218,7 +1308,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["step"]  = 4
             await update.message.reply_text("📞 Número de quien envía (10 dígitos, empieza en 3):")
         elif step == 4:
-            # BUG FIX: Usar validar_telefono() con normalización unicode completa
             tel, es_valido = validar_telefono(text)
             if not es_valido:
                 await update.message.reply_text(
@@ -1280,6 +1369,7 @@ async def agregar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "tipo": "agregar_usuario",
         "admin_name": update.effective_user.first_name or "Admin"
     }
+    actualizar_actividad(user_id)
     await update.message.reply_text("👤 Ingresa el ID del usuario:")
 
 async def eliminar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1443,6 +1533,7 @@ async def panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await update.message.reply_text(texto, parse_mode='Markdown', reply_markup=kb)
 
+
 async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not auth_system.is_main_admin(query.from_user.id):
@@ -1579,8 +1670,10 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).request(request).build()
 
-    # Job de vencimientos cada 12 horas
-    app.job_queue.run_repeating(verificar_vencimientos, interval=43200, first=60)
+    # Jobs periódicos
+    app.job_queue.run_repeating(verificar_vencimientos,       interval=43200, first=60)
+    # FIX: Job de limpieza de sesiones colgadas cada 2 minutos
+    app.job_queue.run_repeating(limpiar_sesiones_colgadas,    interval=120,   first=30)
 
     # Comandos
     app.add_handler(CommandHandler("comprobante",  start))
@@ -1624,7 +1717,7 @@ def main():
                 drop_pending_updates=True,
                 allowed_updates=["message", "callback_query"]
             )
-            break  # salida limpia si termina normalmente
+            break
         except Exception as e:
             error_str = str(e)
             if "Conflict" in error_str:
