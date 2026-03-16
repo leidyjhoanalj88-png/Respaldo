@@ -904,6 +904,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not tipo:
         del user_data_store[user_id]; return
 
+    # Si ya está generando, ignorar mensajes extra
+    if step == "generando":
+        return
+
     # ─────────────────────────────────────────
     # COMPROBANTE 1 — NEQUI
     # ─────────────────────────────────────────
@@ -1421,6 +1425,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # GENERADORES
 # ═══════════════════════════════════════════════
 async def _gen_nequi(update, data, v):
+    data["step"] = "generando"
     try:
         out = generar_comprobante(data, COMPROBANTE1_CONFIG)
         with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
@@ -1439,6 +1444,7 @@ async def _gen_nequi(update, data, v):
         if uid in user_data_store: del user_data_store[uid]
 
 async def _gen_transfiya(update, data, v):
+    data["step"] = "generando"
     try:
         out = generar_comprobante(data, COMPROBANTE4_CONFIG)
         with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
@@ -1456,6 +1462,7 @@ async def _gen_transfiya(update, data, v):
         if uid in user_data_store: del user_data_store[uid]
 
 async def _gen_nequi_qr(update, data, v):
+    data["step"] = "generando"
     try:
         out = generar_comprobante(data, COMPROBANTE_QR_CONFIG)
         with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
@@ -1472,6 +1479,7 @@ async def _gen_nequi_qr(update, data, v):
         if uid in user_data_store: del user_data_store[uid]
 
 async def _gen_anulado(update, data):
+    data["step"] = "generando"
     try:
         out = generar_comprobante_anulado(data, COMPROBANTE_ANULADO_CONFIG)
         with open(out,"rb") as f: await update.message.reply_document(document=f, caption="ANULADO")
@@ -1484,6 +1492,7 @@ async def _gen_anulado(update, data):
         if uid in user_data_store: del user_data_store[uid]
 
 async def _gen_ahorros(update, data, config, caption):
+    data["step"] = "generando"
     try:
         out = generar_comprobante_ahorros(data, config)
         with open(out,"rb") as f: await update.message.reply_document(document=f, caption=caption)
@@ -1500,6 +1509,7 @@ async def _gen_ahorros(update, data, config, caption):
         if uid in user_data_store: del user_data_store[uid]
 
 async def _gen_daviplata(update, data):
+    data["step"] = "generando"
     try:
         out = generar_comprobante_daviplata(data, COMPROBANTE_DAVIPLATA_CONFIG)
         with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Daviplata")
@@ -1512,6 +1522,7 @@ async def _gen_daviplata(update, data):
         if uid in user_data_store: del user_data_store[uid]
 
 async def _gen_bc_nq(update, data, v):
+    data["step"] = "generando"
     try:
         out = generar_comprobante_bc_nq_t(data, COMPROBANTE_BC_NQ_T_CONFIG)
         with open(out,"rb") as f: await update.message.reply_document(document=f, caption="BC a NQ")
@@ -1524,6 +1535,7 @@ async def _gen_bc_nq(update, data, v):
         if uid in user_data_store: del user_data_store[uid]
 
 async def _gen_bc_qr(update, data):
+    data["step"] = "generando"
     try:
         out = generar_comprobante_bc_qr(data, COMPROBANTE_BC_QR_CONFIG)
         with open(out,"rb") as f: await update.message.reply_document(document=f, caption="BC QR")
@@ -1536,6 +1548,7 @@ async def _gen_bc_qr(update, data):
         if uid in user_data_store: del user_data_store[uid]
 
 async def _gen_nequi_bc(update, data):
+    data["step"] = "generando"
     try:
         out = generar_comprobante_nequi_bc(data, COMPROBANTE_NEQUI_BC_CONFIG)
         with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Nequi Corriente")
@@ -1552,6 +1565,7 @@ async def _gen_nequi_bc(update, data):
         if uid in user_data_store: del user_data_store[uid]
 
 async def _gen_nequi_ahorros(update, data):
+    data["step"] = "generando"
     try:
         out = generar_comprobante_nequi_ahorros(data, COMPROBANTE_NEQUI_AHORROS_CONFIG)
         with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Nequi Ahorros")
@@ -1568,6 +1582,7 @@ async def _gen_nequi_ahorros(update, data):
         if uid in user_data_store: del user_data_store[uid]
 
 async def _gen_nuevo(update, data):
+    data["step"] = "generando"
     try:
         out = generar_comprobante_nuevo(data, COMPROBANTE_NUEVO_CONFIG)
         with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
