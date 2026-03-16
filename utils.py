@@ -557,3 +557,4 @@ def generar_movimiento_bancolombia(data, config):
 
     image.save(output_path)
     return output_path
+ 
