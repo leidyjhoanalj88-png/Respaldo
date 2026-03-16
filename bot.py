@@ -1,67 +1,3 @@
-import os
-import sys
-import zipfile
-import signal
-import subprocess
-import urllib.request as _urllib_req
-import time as _time
-import unicodedata
-
-# ══════════════════════════════════════════════════════════════════════════
-# FIX CONFLICT: limpiar webhook + sesión previa de Telegram al arrancar
-# ══════════════════════════════════════════════════════════════════════════
-_BOT_TOKEN_INIT = "8069968534:AAFDKtsi4oIbW-t5Bn-UcR_Sf4DXyWbF9E0"
-
-def limpiar_sesion_telegram():
-    """Borra webhook y cierra sesión previa para evitar el error Conflict."""
-    base = f"https://api.telegram.org/bot{_BOT_TOKEN_INIT}"
-    for i in range(3):
-        try:
-            _urllib_req.urlopen(f"{base}/deleteWebhook?drop_pending_updates=true", timeout=10)
-            _urllib_req.urlopen(f"{base}/close", timeout=10)
-            print("✅ Sesión anterior cerrada. Esperando 5s...")
-            _time.sleep(5)
-            return
-        except Exception as e:
-            print(f"[limpiar_sesion] intento {i+1}: {e}")
-            _time.sleep(2)
-
-limpiar_sesion_telegram()
-
-# ── Kill procesos locales duplicados ──────────────────────────────────────
-def kill_otras_instancias():
-    current_pid = os.getpid()
-    script_name = os.path.basename(__file__)
-    try:
-        result = subprocess.run(
-            ["pgrep", "-f", script_name],
-            capture_output=True, text=True
-        )
-        for pid_str in result.stdout.strip().splitlines():
-            try:
-                pid = int(pid_str)
-                if pid != current_pid:
-                    print(f"⚠️ Matando instancia previa PID={pid}")
-                    os.kill(pid, signal.SIGKILL)
-            except (ValueError, ProcessLookupError, PermissionError):
-                pass
-    except Exception as e:
-        print(f"[kill_otras_instancias] {e}")
-
-kill_otras_instancias()
-
-# ── Descomprimir fuentes automáticamente ──────────────────────────────────
-if not os.path.exists("fuentes") and os.path.exists("fuentes.zip"):
-    with zipfile.ZipFile("fuentes.zip", "r") as z:
-        z.extractall(".")
-    print("✅ Fuentes descomprimidas")
-
-# ── Descomprimir imágenes automáticamente ─────────────────────────────────
-if not os.path.exists("bcnd.jpg") and os.path.exists("img.zip"):
-    with zipfile.ZipFile("img.zip", "r") as z:
-        z.extractall(".")
-    print("✅ Imágenes descomprimidas")
-
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from config import (
@@ -84,168 +20,214 @@ from utils import (
     generar_movimiento_bancolombia
 )
 from auth_system import AuthSystem
-import asyncio
-import logging
-import traceback
+import os, sys, logging, fcntl, json, urllib.parse
 from datetime import datetime, date, timedelta
 import pytz
-import json
-import urllib.request
-import urllib.parse
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO)
 
-# ── CONFIGURACIÓN ─────────────────────────────────────────────────────────
-BOT_TOKEN         = "8069968534:AAFDKtsi4oIbW-t5Bn-UcR_Sf4DXyWbF9E0"
-ADMIN_ID          = 7422843477
+# ═══════════════════════════════════════════════
+# ANTI-DUPLICADO — solo una instancia en Railway
+# ═══════════════════════════════════════════════
+LOCK_FILE = "/tmp/moni_bot.lock"
+_lock_fh = None
+
+def acquire_instance_lock():
+    global _lock_fh
+    try:
+        _lock_fh = open(LOCK_FILE, 'w')
+        fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_fh.write(str(os.getpid())); _lock_fh.flush()
+        logging.info(f"[LOCK] Instancia adquirida PID={os.getpid()}")
+        return True
+    except IOError:
+        logging.error("[LOCK] Ya hay una instancia corriendo.")
+        return False
+
+def release_instance_lock():
+    global _lock_fh
+    try:
+        if _lock_fh:
+            fcntl.flock(_lock_fh, fcntl.LOCK_UN)
+            _lock_fh.close()
+            if os.path.exists(LOCK_FILE): os.remove(LOCK_FILE)
+    except: pass
+
+# ═══════════════════════════════════════════════
+# CONSTANTES
+# ═══════════════════════════════════════════════
+ADMIN_ID          = 8114050673
 ALLOWED_GROUP     = -1003512376124
 REQUIRED_GROUP_ID = -1003512376124
-GROUP_LINK        = "https://t.me/nequixxx"
-
-# Timeout de sesión: 10 minutos sin actividad = limpiar
-SESSION_TIMEOUT_SECONDS = 600
 
 auth_system = AuthSystem(ADMIN_ID, ALLOWED_GROUP)
-user_data_store = {}
-fecha_manual_mode = {}
+fecha_manual_mode      = {}
 referencia_manual_mode = {}
-# FIX: Rastrear timestamp de última actividad para limpiar sesiones colgadas
-user_last_activity = {}
-REFERENCIAS_FILE = "referencias.json"
-VENCIMIENTOS_FILE = "vencimientos.json"
+REFERENCIAS_FILE       = "referencias.json"
+VENCIMIENTOS_FILE      = "vencimientos.json"
+USER_DATA_FILE         = "user_data_store.json"
 
+# ═══════════════════════════════════════════════
+# USER DATA STORE PERSISTENTE
+# ═══════════════════════════════════════════════
+def _uds_load():
+    if os.path.exists(USER_DATA_FILE):
+        try:
+            with open(USER_DATA_FILE, 'r', encoding='utf-8') as f:
+                return {int(k): v for k, v in json.load(f).items()}
+        except: pass
+    return {}
 
-# ══════════════════════════════════════════════════════════════════════════
-# UTILIDADES
-# ══════════════════════════════════════════════════════════════════════════
+def _uds_dump(store):
+    try:
+        with open(USER_DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump({str(k): dict(v) for k, v in store.items()}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.error(f"[UDS] Error guardando: {e}")
 
-def limpiar_valor(text):
-    """Limpia caracteres invisibles, símbolos y separadores de un valor numérico."""
-    text = unicodedata.normalize('NFKC', text)
-    return (text.strip()
-                .replace(".", "").replace(",", "")
-                .replace(" ", "").replace("$", "")
-                .replace("\xa0", "").replace("\u200b", "")
-                .replace("\u200c", "").replace("\u200d", "")
-                .replace("\ufeff", "").replace("\u00ad", ""))
+class _InnerDict(dict):
+    def __init__(self, data, cb):
+        super().__init__(data); self._cb = cb
+    def __setitem__(self, k, v):
+        super().__setitem__(k, v); self._cb()
+    def __delitem__(self, k):
+        super().__delitem__(k); self._cb()
+    def update(self, *a, **kw):
+        super().update(*a, **kw); self._cb()
 
-def limpiar_telefono(text):
-    text = unicodedata.normalize('NFKC', text)
-    resultado = ""
-    for ch in text:
-        if ch.isdigit() or (ch == '+' and not resultado):
-            resultado += ch
-    return resultado
+class UDS(dict):
+    def __setitem__(self, k, v):
+        super().__setitem__(k, _InnerDict(v, lambda: _uds_dump(self)))
+        _uds_dump(self)
+    def __delitem__(self, k):
+        super().__delitem__(k); _uds_dump(self)
 
-def fmt_valor(v):
-    return f"${abs(int(v)):,}".replace(",", ".")
+uds = UDS()
+for _k, _v in _uds_load().items():
+    super(UDS, uds).__setitem__(_k, _InnerDict(_v, lambda: _uds_dump(uds)))
 
-def limpiar_usuario(user_id):
-    user_data_store.pop(user_id, None)
-    fecha_manual_mode.pop(user_id, None)
-    referencia_manual_mode.pop(user_id, None)
-    user_last_activity.pop(user_id, None)
+user_data_store = uds
 
-def actualizar_actividad(user_id):
-    """FIX: Registrar timestamp de última actividad."""
-    user_last_activity[user_id] = _time.time()
+# ═══════════════════════════════════════════════
+# SMS CRÉDITOS
+# ═══════════════════════════════════════════════
+SMS_FILE = "sms_creditos.json"
 
-def validar_telefono(text):
-    tel = limpiar_telefono(text)
-    if tel.startswith("+57"):
-        tel = tel[3:]
-    elif tel.startswith("57") and len(tel) == 12:
-        tel = tel[2:]
+def cargar_sms_creditos():
+    if os.path.exists(SMS_FILE):
+        try:
+            with open(SMS_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+        except: pass
+    return {}
 
-    es_valido = (
-        tel.isdigit() and
-        len(tel) == 10 and
-        tel.startswith("3")
-    )
-    return tel, es_valido
+def guardar_sms_creditos(data):
+    with open(SMS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
+def asignar_sms_por_dias(user_id, dias):
+    sms = int(round(dias / 30)) * 100
+    c = cargar_sms_creditos(); uid = str(user_id)
+    c[uid] = c.get(uid, 0) + sms
+    guardar_sms_creditos(c); return sms
+
+def recargar_sms(user_id, cantidad):
+    c = cargar_sms_creditos(); uid = str(user_id)
+    c[uid] = c.get(uid, 0) + cantidad
+    guardar_sms_creditos(c); return c[uid]
+
+def puede_enviar_sms(user_id):
+    return cargar_sms_creditos().get(str(user_id), 0) > 0
+
+def consumir_sms(user_id):
+    c = cargar_sms_creditos(); uid = str(user_id)
+    if c.get(uid, 0) > 0:
+        c[uid] -= 1; guardar_sms_creditos(c); return c[uid]
+    return 0
+
+def get_sms_restantes(user_id):
+    return cargar_sms_creditos().get(str(user_id), 0)
+
+# ═══════════════════════════════════════════════
+# SMS AUTORIZACIÓN (admin debe autorizar al usuario)
+# ═══════════════════════════════════════════════
+SMS_AUTH_FILE = "sms_autorizados.json"
+
+def cargar_sms_autorizados():
+    if os.path.exists(SMS_AUTH_FILE):
+        try:
+            with open(SMS_AUTH_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except: pass
+    return []
+
+def guardar_sms_autorizados(data):
+    with open(SMS_AUTH_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def autorizar_sms(user_id):
+    a = cargar_sms_autorizados()
+    uid = str(user_id)
+    if uid not in a:
+        a.append(uid)
+        guardar_sms_autorizados(a)
+    return True
+
+def desautorizar_sms(user_id):
+    a = cargar_sms_autorizados()
+    uid = str(user_id)
+    if uid in a:
+        a.remove(uid)
+        guardar_sms_autorizados(a)
+
+def sms_autorizado(user_id):
+    """Usuario puede enviar SMS si: es admin O está autorizado por admin"""
+    if auth_system.is_admin(user_id):
+        return True
+    return str(user_id) in cargar_sms_autorizados()
+
+# ═══════════════════════════════════════════════
+# QR EMV PARSER
+# ═══════════════════════════════════════════════
 def parsear_qr_emv(contenido):
     try:
         pos = 0; datos = {}
         while pos + 4 <= len(contenido):
             tag = contenido[pos:pos+2]
-            try:
-                length = int(contenido[pos+2:pos+4])
-            except ValueError:
-                break
-            value = contenido[pos+4:pos+4+length]
-            datos[tag] = value
-            pos += 4 + length
-        if "59" in datos and datos["59"].strip():
-            return datos["59"].strip()
+            try: length = int(contenido[pos+2:pos+4])
+            except ValueError: break
+            value = contenido[pos+4:pos+4+length]; datos[tag] = value; pos += 4 + length
+        if "59" in datos and datos["59"].strip(): return datos["59"].strip()
         if "26" in datos:
-            sub = datos["26"]; sub_pos = 0
-            while sub_pos + 4 <= len(sub):
-                s_tag = sub[sub_pos:sub_pos+2]
-                try:
-                    s_len = int(sub[sub_pos+2:sub_pos+4])
-                except ValueError:
-                    break
-                s_val = sub[sub_pos+4:sub_pos+4+s_len]
-                if s_tag == "02" and s_val.strip():
-                    return s_val.strip()
-                sub_pos += 4 + s_len
-    except Exception:
-        pass
+            sub = datos["26"]; sp = 0
+            while sp + 4 <= len(sub):
+                st = sub[sp:sp+2]
+                try: sl = int(sub[sp+2:sp+4])
+                except ValueError: break
+                sv = sub[sp+4:sp+4+sl]
+                if st == "02" and sv.strip(): return sv.strip()
+                sp += 4 + sl
+    except: pass
     return None
 
 def extraer_nombre_qr(contenido):
-    nombre_emv = parsear_qr_emv(contenido)
-    if nombre_emv:
-        return nombre_emv
-    if "name=" in contenido.lower() or "&" in contenido or "=" in contenido:
+    n = parsear_qr_emv(contenido)
+    if n: return n
+    if "=" in contenido:
         try:
             params = dict(urllib.parse.parse_qsl(contenido.split("?")[-1]))
-            for key in ["name", "Name", "merchant", "businessName", "alias", "comercio", "negocio"]:
-                if key in params and params[key].strip():
-                    return params[key].strip()
-        except Exception:
-            pass
+            for k in ["name","Name","merchant","businessName","alias","comercio","negocio"]:
+                if k in params and params[k].strip(): return params[k].strip()
+        except: pass
     return contenido[:40].strip()
 
-
-# ══════════════════════════════════════════════════════════════════════════
-# FIX: JOB para limpiar sesiones colgadas automáticamente
-# ══════════════════════════════════════════════════════════════════════════
-
-async def limpiar_sesiones_colgadas(context: ContextTypes.DEFAULT_TYPE):
-    """Limpia sesiones que llevan más de SESSION_TIMEOUT_SECONDS sin actividad."""
-    ahora = _time.time()
-    usuarios_a_limpiar = []
-    for uid, ts in list(user_last_activity.items()):
-        if ahora - ts > SESSION_TIMEOUT_SECONDS:
-            usuarios_a_limpiar.append(uid)
-    for uid in usuarios_a_limpiar:
-        logging.info(f"[TIMEOUT] Limpiando sesión colgada del usuario {uid}")
-        limpiar_usuario(uid)
-        try:
-            await context.bot.send_message(
-                chat_id=uid,
-                text="⏰ Tu sesión expiró por inactividad.\nUsa /comprobante para comenzar de nuevo."
-            )
-        except Exception:
-            pass
-
-
-# ══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════
 # VENCIMIENTOS
-# ══════════════════════════════════════════════════════════════════════════
-
+# ═══════════════════════════════════════════════
 def cargar_vencimientos():
     if os.path.exists(VENCIMIENTOS_FILE):
         try:
-            with open(VENCIMIENTOS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            return {}
+            with open(VENCIMIENTOS_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+        except: pass
     return {}
 
 def guardar_vencimientos(data):
@@ -253,1505 +235,1701 @@ def guardar_vencimientos(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def agregar_vencimiento(user_id, nombre, dias=30):
-    vencimientos = cargar_vencimientos()
-    fecha_vence = (date.today() + timedelta(days=dias)).isoformat()
-    vencimientos[str(user_id)] = {
-        "nombre": nombre, "fecha_vence": fecha_vence,
-        "dias": dias, "aviso3_enviado": False, "expirado_enviado": False
-    }
-    guardar_vencimientos(vencimientos)
-    return fecha_vence
+    v = cargar_vencimientos()
+    fv = (date.today() + timedelta(days=dias)).isoformat()
+    v[str(user_id)] = {"nombre": nombre, "fecha_vence": fv, "dias": dias,
+                       "aviso3_enviado": False, "expirado_enviado": False}
+    guardar_vencimientos(v); return fv
 
 def eliminar_vencimiento(user_id):
-    vencimientos = cargar_vencimientos()
-    if str(user_id) in vencimientos:
-        del vencimientos[str(user_id)]
-        guardar_vencimientos(vencimientos)
+    v = cargar_vencimientos()
+    if str(user_id) in v: del v[str(user_id)]; guardar_vencimientos(v)
 
 async def verificar_vencimientos(context: ContextTypes.DEFAULT_TYPE):
-    vencimientos = cargar_vencimientos()
-    hoy = date.today()
-    actualizar = False
-    for uid_str, info in vencimientos.items():
+    v = cargar_vencimientos(); hoy = date.today(); actualizar = False
+    for uid_str, info in v.items():
         uid = int(uid_str)
-        fecha_vence = date.fromisoformat(info["fecha_vence"])
-        dias_restantes = (fecha_vence - hoy).days
-        if dias_restantes == 3 and not info.get("aviso3_enviado"):
+        fv = date.fromisoformat(info["fecha_vence"])
+        dr = (fv - hoy).days
+        if dr == 3 and not info.get("aviso3_enviado"):
             try:
-                await context.bot.send_message(
-                    chat_id=uid,
-                    text=f"⚠️ *Aviso*\n\nHola {info['nombre']}, tu acceso vence en *3 días* ({fecha_vence.strftime('%d/%m/%Y')}).\n\nRenueva con un admin 👑 @nequixxx",
-                    parse_mode="Markdown"
-                )
-                info["aviso3_enviado"] = True
-                actualizar = True
-            except Exception as e:
-                logging.error(f"[VENC] {uid}: {e}")
-        elif dias_restantes <= 0 and not info.get("expirado_enviado"):
+                await context.bot.send_message(chat_id=uid, parse_mode="Markdown",
+                    text=f"⚠️ *Aviso de Vencimiento*\n\nHola {info['nombre']}, tu acceso vence en *3 días* ({fv.strftime('%d/%m/%Y')}).\n\nRenueva con un administrador.\n\n🔑 ADM 2: @StephenCurry030")
+                info["aviso3_enviado"] = True; actualizar = True
+            except Exception as e: logging.error(f"[VENC] {e}")
+        elif dr <= 0 and not info.get("expirado_enviado"):
             try:
-                await context.bot.send_message(
-                    chat_id=uid,
-                    text=f"🔴 *Acceso Expirado*\n\nHola {info['nombre']}, tu acceso expiró.\nContacta al admin:",
-                    parse_mode="Markdown",
+                await context.bot.send_message(chat_id=uid, parse_mode="Markdown",
+                    text=f"🔴 *Acceso Expirado*\n\nHola {info['nombre']}, tu acceso ha expirado.\n\nContacta a un administrador para renovar:",
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("👑 ADM", url="tg://user?id=7422843477")],
-                        [InlineKeyboardButton("📢 Grupo", url=GROUP_LINK)]
-                    ])
-                )
-                auth_system.remove_user(uid)
-                info["expirado_enviado"] = True
-                actualizar = True
-            except Exception as e:
-                logging.error(f"[VENC] {uid}: {e}")
-    if actualizar:
-        guardar_vencimientos(vencimientos)
+                        [InlineKeyboardButton("🔑 ADM 2", url="tg://user?id=7422843477")],
+                        [InlineKeyboardButton("📢 Grupo", url="https://t.me/nequixxx")]]))
+                auth_system.remove_user(uid); info["expirado_enviado"] = True; actualizar = True
+            except Exception as e: logging.error(f"[VENC] {e}")
+    if actualizar: guardar_vencimientos(v)
 
+# ═══════════════════════════════════════════════
+# SMS VONAGE
+# ═══════════════════════════════════════════════
+def enviar_sms_twilio(numero, valor, mensaje_custom=False):
+    try:
+        import vonage
+        api_key    = os.environ.get('VONAGE_API_KEY')
+        api_secret = os.environ.get('VONAGE_API_SECRET')
+        remitente  = os.environ.get('VONAGE_FROM_NUMBER', 'Vonage APIs')
 
-# ══════════════════════════════════════════════════════════════════════════
+        if not all([api_key, api_secret]):
+            logging.error("[SMS] Faltan variables VONAGE"); return False
+
+        num = str(numero).strip() if numero else ""
+        if not num:
+            logging.error("[SMS] Número vacío"); return False
+        if not num.startswith('+'):
+            num = f"+57{num}"
+
+        try:
+            valor_num = float(str(valor).replace(".", "").replace(",", "").replace(" ", "")) if valor is not None else 0
+            valor_seguro = int(abs(valor_num))
+        except (TypeError, ValueError):
+            valor_seguro = 0
+
+        if mensaje_custom:
+            msg = str(valor) if valor else "Transferencia recibida"
+        else:
+            msg = f"Te han transferido ${valor_seguro:,} COP. Verifica en tu app".replace(",", ".")
+
+        client = vonage.Client(key=api_key, secret=api_secret)
+        sms    = vonage.Sms(client)
+        resp   = sms.send_message({
+            "from": remitente,
+            "to":   num,
+            "text": msg
+        })
+
+        if resp["messages"][0]["status"] == "0":
+            logging.info(f"[SMS] Enviado OK a {num}")
+            return True
+        else:
+            logging.error(f"[SMS] Error Vonage: {resp['messages'][0]['error-text']}")
+            return False
+    except Exception as e:
+        logging.error(f"[SMS] Error: {e}"); return False
+
+def puede_enviar_sms_comprobante(user_id):
+    """Solo puede enviar SMS si tiene autorización del ADM"""
+    return sms_autorizado(user_id) and (
+        auth_system.is_admin(user_id) or puede_enviar_sms(user_id)
+    )
+
+# ═══════════════════════════════════════════════
 # REFERENCIAS
-# ══════════════════════════════════════════════════════════════════════════
-
+# ═══════════════════════════════════════════════
 def cargar_referencias():
     if os.path.exists(REFERENCIAS_FILE):
         try:
-            with open(REFERENCIAS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            return []
+            with open(REFERENCIAS_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+        except: pass
     return []
 
-def guardar_referencias(referencias):
+def guardar_referencias(r):
     with open(REFERENCIAS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(referencias, f, ensure_ascii=False, indent=2)
+        json.dump(r, f, ensure_ascii=False, indent=2)
 
-
-# ══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════
 # TECLADOS
-# ══════════════════════════════════════════════════════════════════════════
-
+# ═══════════════════════════════════════════════
 def admin_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💎 ¿Necesitas acceso?", callback_data="apk_precios")],
-        [InlineKeyboardButton("👑 ADM", url="tg://user?id=7422843477")],
-        [InlineKeyboardButton("📢 Grupo", url=GROUP_LINK)]
+        [InlineKeyboardButton("🔑 ADM 2", url="tg://user?id=7422843477")],
+        [InlineKeyboardButton("📢 Grupo", url="https://t.me/nequixxx")]
     ])
 
-def confirm_keyboard(user_id):
+def sms_anuncio_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Confirmar", callback_data=f"gen_ok_{user_id}"),
-         InlineKeyboardButton("❌ Cancelar", callback_data=f"gen_no_{user_id}")]
+        [InlineKeyboardButton("📲 Ver Paquetes SMS", callback_data="sms_ofertas")],
+        [InlineKeyboardButton("🔑 ADM 2", url="tg://user?id=7422843477")],
     ])
 
-def main_keyboard():
-    keyboard = [
-        [KeyboardButton("Nequi"),           KeyboardButton("Nequi QR")],
-        [KeyboardButton("Daviplata"),        KeyboardButton("Bre B")],
-        [KeyboardButton("Ahorros"),          KeyboardButton("Corriente")],
-        [KeyboardButton("BC a NQ"),          KeyboardButton("BC QR")],
-        [KeyboardButton("Nequi Corriente"),  KeyboardButton("Nequi Ahorros")],
-        [KeyboardButton("Anulado")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+SMS_ANUNCIO = (
+    "📲 *¡SERVICIO SMS DISPONIBLE!*\n"
+    "━━━━━━━━━━━━━━━━━\n\n"
+    "✅ Este bot puede enviar un *SMS real* al celular del destinatario notificando la transferencia.\n\n"
+    "💡 *¿Cómo obtener SMS?*\n"
+    "• Los usuarios *ADM* tienen SMS ilimitados ✅\n"
+    "• Los usuarios *VIP* pueden comprar paquetes SMS\n"
+    "• Contacta a un ADM para recargar tus créditos\n\n"
+    "📦 *Paquetes disponibles:*\n"
+    "• 100 SMS → $10.000 COP\n"
+    "• 200 SMS → $20.000 COP\n"
+    "• 300 SMS → $30.000 COP\n"
+    "• 500 SMS → $50.000 COP"
+)
 
+SMS_SIN_CREDITOS = (
+    "📲 *SMS no enviado*\n\n"
+    "⚠️ No tienes créditos SMS disponibles.\n\n"
+    "📦 *Compra un paquete SMS con el ADM:*\n"
+    "• 100 SMS → $10.000 COP\n"
+    "• 200 SMS → $20.000 COP\n"
+    "• 300 SMS → $30.000 COP\n"
+    "• 500 SMS → $50.000 COP\n\n"
+    "Tu comprobante fue generado correctamente ✅"
+)
 
-# ══════════════════════════════════════════════════════════════════════════
-# FIX: VERIFICACIÓN DE MEMBRESÍA MEJORADA
-# ══════════════════════════════════════════════════════════════════════════
+SMS_NO_AUTORIZADO = (
+    "📲 *SMS no disponible*\n\n"
+    "⚠️ No tienes autorización para usar el servicio SMS.\n\n"
+    "📩 *Solicita autorización al ADM:*\n"
+    "Escríbele al administrador para que te autorice con el comando `/autorizarsms`\n\n"
+    "Tu comprobante fue generado correctamente ✅"
+)
 
-async def verificar_membresia_grupo(context, user_id: int) -> bool:
-    """
-    FIX: Verifica que el usuario esté en el grupo requerido via API de Telegram.
-    Retorna True si está en el grupo, False si no.
-    """
+# ═══════════════════════════════════════════════
+# CACHÉ MEMBRESÍA
+# ═══════════════════════════════════════════════
+_membresia_cache = {}
+MEMBRESIA_TTL = 21600
+
+async def is_member_of_group(bot, user_id):
+    import time
+    cached = _membresia_cache.get(user_id)
+    if cached and (time.time() - cached[0]) < MEMBRESIA_TTL: return cached[1]
     try:
-        member = await context.bot.get_chat_member(
-            chat_id=REQUIRED_GROUP_ID,
-            user_id=user_id
-        )
-        # Estados válidos de membresía
-        return member.status in ("member", "administrator", "creator", "restricted")
-    except Exception as e:
-        logging.warning(f"[MEMBRESIA] No se pudo verificar al usuario {user_id}: {e}")
-        # Si falla la verificación (ej: bot no está en el grupo), permitir acceso
-        return True
+        m = await bot.get_chat_member(chat_id=REQUIRED_GROUP_ID, user_id=user_id)
+        result = m.status in ['member', 'administrator', 'creator']
+    except:
+        result = True
+    _membresia_cache[user_id] = (time.time(), result)
+    return result
 
+# ═══════════════════════════════════════════════
+# NOTIFY ADMIN
+# ═══════════════════════════════════════════════
+async def notify_main_admin(context, admin_id, admin_name, action, target=""):
+    if admin_id == ADMIN_ID: return
+    try:
+        now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        msg = f"🔔 *Notificación*\n👤 {admin_id} ({admin_name})\n⚡ {action}"
+        if target: msg += f"\n🎯 {target}"
+        msg += f"\n🕐 {now}"
+        await context.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode='Markdown')
+    except: pass
 
-async def verificar_acceso(update: Update, context) -> bool:
-    """
-    FIX MEJORADO: Verifica acceso con membresía real al grupo.
-    Retorna True si el usuario puede usar el bot, False si no.
-    """
+# ═══════════════════════════════════════════════
+# SEND SUCCESS MESSAGE
+# ═══════════════════════════════════════════════
+async def send_success_message(update: Update, sms_data: dict = None):
     user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
+    nombre  = update.effective_user.first_name or "Usuario"
 
-    if auth_system.is_banned(user_id):
-        await update.message.reply_text("🚫 Estás baneado.")
-        return False
-
-    if auth_system.is_admin(user_id):
-        return True
-
-    # FIX: Verificar membresía real en el grupo
-    en_grupo = await verificar_membresia_grupo(context, user_id)
-    if not en_grupo:
-        await update.message.reply_text(
-            "⛔ *Debes estar en el grupo para usar el bot.*\n\n"
-            "📢 Únete aquí:",
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📢 Unirme al Grupo", url=GROUP_LINK)],
-                [InlineKeyboardButton("👑 Contactar ADM", url="tg://user?id=7422843477")]
-            ])
-        )
-        return False
-
-    if auth_system.gratis_mode or auth_system.can_use_bot(user_id, chat_id):
-        return True
+    if sms_data:
+        tel = sms_data.get("telefono")
+        val = sms_data.get("valor")
+        if tel and val is not None:
+            if not sms_autorizado(user_id):
+                # Usuario no autorizado para SMS
+                await update.message.reply_text(SMS_NO_AUTORIZADO, parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔑 ADM 2", url="tg://user?id=7422843477")]]))
+            elif auth_system.is_admin(user_id):
+                # Admin: SMS ilimitado
+                if enviar_sms_twilio(tel, val):
+                    await update.message.reply_text("📲 *SMS enviado al destinatario.* ✅", parse_mode='Markdown')
+                else:
+                    await update.message.reply_text("⚠️ No se pudo enviar el SMS (error Twilio).")
+            elif puede_enviar_sms(user_id):
+                if enviar_sms_twilio(tel, val):
+                    restantes = consumir_sms(user_id)
+                    await update.message.reply_text(
+                        f"📲 *SMS enviado al destinatario.* ✅\n💳 Te quedan *{restantes}* SMS.",
+                        parse_mode='Markdown')
+                else:
+                    await update.message.reply_text("⚠️ No se pudo enviar el SMS (error Twilio).")
+            else:
+                await update.message.reply_text(SMS_SIN_CREDITOS, parse_mode='Markdown',
+                    reply_markup=sms_anuncio_kb())
 
     await update.message.reply_text(
-        "🔴 *Bot en Modo OFF*\n\n💰 Contacta a un admin para obtener acceso.",
-        parse_mode='Markdown',
-        reply_markup=admin_keyboard()
-    )
-    return False
+        f"✅ <b>Comprobante generado con éxito</b>\n\n"
+        f"👤 <b>{nombre}</b>, usa /comprobante para generar otro\n\n"
+        f"🙏 <b>Gracias por utilizar nuestros servicios</b>",
+        parse_mode='HTML')
 
+    if auth_system.gratis_mode and not auth_system.is_admin(user_id):
+        await update.message.reply_text(SMS_ANUNCIO, parse_mode='Markdown', reply_markup=sms_anuncio_kb())
 
-# ══════════════════════════════════════════════════════════════════════════
-# GENERACIÓN
-# ══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════
+# HELPER: parsers
+# ═══════════════════════════════════════════════
+def parse_valor(text):
+    if not text or not isinstance(text, str):
+        raise ValueError("Valor vacío o nulo")
+    limpio = text.strip().replace(".", "").replace(",", "").replace(" ", "")
+    if limpio.startswith("-"):
+        limpio = limpio[1:]
+    if not limpio:
+        raise ValueError("Valor vacío")
+    if not limpio.isdigit():
+        raise ValueError(f"No es numérico: {limpio}")
+    v = int(limpio)
+    if v == 0:
+        raise ValueError("Valor cero")
+    return v
 
-async def generar_y_enviar_a_chat(chat_id, context, fn, data, config, caption=" "):
-    out = None
-    try:
-        out = fn(data, config)
-        if not out or not os.path.exists(out):
-            raise ValueError(f"No se generó archivo: {out}")
-        for intento in range(2):
-            try:
-                with open(out, "rb") as f:
-                    await context.bot.send_document(chat_id=chat_id, document=f, caption=caption)
-                return True
-            except Exception as e:
-                if "TimedOut" in str(e) and intento == 0:
-                    await asyncio.sleep(3)
-                    continue
-                raise
-    except Exception:
-        tb = traceback.format_exc()
-        logging.error(f"[ERROR generacion] {tb}")
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"❌ Error generando comprobante:\n<code>{tb[-600:]}</code>",
-            parse_mode="HTML"
-        )
-        return False
-    finally:
-        if out and os.path.exists(out):
-            try:
-                os.remove(out)
-            except:
-                pass
+def parse_tel(text):
+    if not text or not isinstance(text, str):
+        return None
+    d = text.strip().replace(" ", "").replace("-", "")
+    if d.isdigit() and len(d) == 10 and d.startswith('3'):
+        return d
+    return None
 
+def parse_nombre(text):
+    if not text or not isinstance(text, str):
+        return None
+    n = text.strip()
+    if len(n) < 2:
+        return None
+    return n
 
-def construir_resumen(data, tipo):
-    tipo_nombres = {
-        "comprobante1":          "🟣 Nequi",
-        "comprobante4":          "💸 Transfiya",
-        "comprobante_qr":        "📱 Nequi QR",
-        "comprobante_nuevo":     "🔑 Bre B",
-        "comprobante_anulado":   "❌ Anulado",
-        "comprobante_ahorros":   "🏦 Ahorros BC",
-        "comprobante_corriente": "🏦 Corriente BC",
-        "comprobante_daviplata": "🔴 Daviplata",
-        "comprobante_bc_nq_t":   "🏦➡️🟣 BC a NQ",
-        "comprobante_bc_qr":     "🏦 BC QR",
-        "comprobante_nequi_bc":  "🟣➡️🏦 Nequi Corriente",
-        "comprobante_nequi_ahorros": "🟣➡️🏦 Nequi Ahorros",
-    }
-    v = data.get("valor", 0)
-    lineas = [
-        "📋 *Confirma los datos:*",
-        "━━━━━━━━━━━━━━━━━",
-        f"📌 {tipo_nombres.get(tipo, tipo)}"
-    ]
-    if "nombre"         in data: lineas.append(f"👤 Nombre: {data['nombre']}")
-    if "telefono"       in data: lineas.append(f"📱 Teléfono: {data['telefono']}")
-    if "numero_cuenta"  in data: lineas.append(f"🏦 Cuenta: {data['numero_cuenta']}")
-    if "descripcion_qr" in data: lineas.append(f"📲 QR: {data['descripcion_qr']}")
-    if "llave"          in data: lineas.append(f"🔑 Llave: {data['llave']}")
-    if "banco"          in data: lineas.append(f"🏛️ Banco: {data['banco']}")
-    if "numero_envia"   in data: lineas.append(f"📞 Núm. envía: {data['numero_envia']}")
-    if "recibe"         in data: lineas.append(f"📤 Cuenta envía: ****{data['recibe']}")
-    if "envia"          in data: lineas.append(f"📥 Cuenta recibe: ****{data['envia']}")
-    lineas.append(f"💰 Valor: {fmt_valor(v)}")
-    lineas.append(f"📅 Fecha: {'Manual: ' + data['fecha_manual'] if data.get('fecha_manual') else 'Automática'}")
-    lineas.append(f"🔢 Ref: {'Manual: ' + data['referencia_manual'] if data.get('referencia_manual') else 'Automática'}")
-    lineas.append("━━━━━━━━━━━━━━━━━\n¿Está correcto?")
-    return "\n".join(lineas)
-
-
-async def mostrar_confirmacion(update, user_id, data, tipo):
-    data["_pendiente"] = True
-    actualizar_actividad(user_id)
-    await update.message.reply_text(
-        construir_resumen(data, tipo),
-        parse_mode="Markdown",
-        reply_markup=confirm_keyboard(user_id)
-    )
-
-
-async def ejecutar_generacion(chat_id, context, user_id):
-    """
-    FIX: Envuelto en try/except global para que nunca quede la sesión colgada.
-    """
-    if user_id not in user_data_store:
-        await context.bot.send_message(chat_id=chat_id, text="❌ Sesión expirada. Usa /comprobante")
-        return
-    data = user_data_store[user_id]
-    tipo = data["tipo"]
-    v    = data.get("valor", 0)
-
-    # FIX: limpiar _pendiente antes de generar para evitar bloqueo
-    data.pop("_pendiente", None)
-
-    try:
-        await context.bot.send_message(chat_id=chat_id, text="⏳ Generando comprobante...")
-        ok = False
-
-        if tipo == "comprobante1":
-            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, data, COMPROBANTE1_CONFIG)
-            if ok:
-                dm = data.copy()
-                dm["nombre"] = data["nombre"].upper()
-                dm["valor"]  = -abs(v)
-                await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO_CONFIG)
-
-        elif tipo == "comprobante4":
-            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, data, COMPROBANTE4_CONFIG)
-            if ok:
-                dm2 = {"telefono": data["telefono"], "valor": -abs(v), "nombre": data["telefono"]}
-                await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
-
-        elif tipo == "comprobante_qr":
-            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, data, COMPROBANTE_QR_CONFIG)
-            if ok:
-                dm = {"nombre": data["nombre"].upper(), "valor": -abs(v)}
-                await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
-
-        elif tipo == "comprobante_anulado":
-            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_anulado, data, COMPROBANTE_ANULADO_CONFIG, "ANULADO")
-
-        elif tipo == "comprobante_ahorros":
-            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_ahorros, data, COMPROBANTE_AHORROS_CONFIG, "Ahorros")
-
-        elif tipo == "comprobante_corriente":
-            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_ahorros, data, COMPROBANTE_AHORROS2_CONFIG, "Corriente")
-
-        elif tipo == "comprobante_daviplata":
-            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_daviplata, data, COMPROBANTE_DAVIPLATA_CONFIG, "Daviplata")
-
-        elif tipo == "comprobante_bc_nq_t":
-            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_bc_nq_t, data, COMPROBANTE_BC_NQ_T_CONFIG, "BC a NQ")
-
-        elif tipo == "comprobante_bc_qr":
-            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_bc_qr, data, COMPROBANTE_BC_QR_CONFIG, "BC QR")
-
-        elif tipo == "comprobante_nequi_bc":
-            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_nequi_bc, data, COMPROBANTE_NEQUI_BC_CONFIG, "Nequi Corriente")
-
-        elif tipo == "comprobante_nequi_ahorros":
-            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_nequi_ahorros, data, COMPROBANTE_NEQUI_AHORROS_CONFIG, "Nequi Ahorros")
-
-        elif tipo == "comprobante_nuevo":
-            ok = await generar_y_enviar_a_chat(chat_id, context, generar_comprobante_nuevo, data, COMPROBANTE_NUEVO_CONFIG)
-            if ok:
-                await asyncio.sleep(1.5)
-                dm = {"nombre": enmascarar_nombre(data["nombre"]), "valor": -abs(float(v))}
-                await generar_y_enviar_a_chat(chat_id, context, generar_comprobante, dm, MVKEY_CONFIG)
-
-        if ok:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="✅ *Comprobante generado con éxito*\n\nUsa /comprobante para generar otro",
-                parse_mode='Markdown',
-                reply_markup=main_keyboard()
-            )
-        else:
-            # FIX: Si falló, avisar al usuario para que pueda reintentar
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="❌ No se pudo generar el comprobante.\nUsa /comprobante para intentar de nuevo.",
-                reply_markup=main_keyboard()
-            )
-
-    except Exception as e:
-        logging.error(f"[ejecutar_generacion] Error fatal: {traceback.format_exc()}")
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="❌ Error inesperado al generar.\nUsa /comprobante para intentar de nuevo.",
-                reply_markup=main_keyboard()
-            )
-        except Exception:
-            pass
-    finally:
-        # FIX CRÍTICO: SIEMPRE limpiar la sesión al final, pase lo que pase
-        limpiar_usuario(user_id)
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# CALLBACK CONFIRMACIÓN
-# ══════════════════════════════════════════════════════════════════════════
-
-async def confirmar_generacion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    parts  = query.data.split("_")
-    action = parts[1]
-    user_id = int(parts[2])
-
-    if query.from_user.id != user_id:
-        await query.answer("❌ Esta confirmación no es tuya.", show_alert=True)
-        return
-
-    if action == "no":
-        limpiar_usuario(user_id)
-        await query.edit_message_text("❌ Cancelado.\n\nUsa /comprobante para empezar de nuevo.")
-        return
-
-    # FIX: Verificar que la sesión todavía exista antes de procesar
-    if user_id not in user_data_store:
-        await query.edit_message_text("⏰ Sesión expirada. Usa /comprobante para empezar de nuevo.")
-        return
-
-    await query.edit_message_text("✅ Confirmado, procesando...")
-    await ejecutar_generacion(query.message.chat_id, context, user_id)
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# COMANDOS PRINCIPALES
-# ══════════════════════════════════════════════════════════════════════════
-
+# ═══════════════════════════════════════════════
+# COMANDOS PÚBLICOS
+# ═══════════════════════════════════════════════
 async def start_redirect(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    nombre = update.effective_user.first_name or "Usuario"
     await update.message.reply_text(
-        "👋 Bienvenido al generador de comprobantes\n\n"
-        "/comprobante - Iniciar\n"
-        "/fechas - Activar fechas manuales\n"
-        "/refes - Activar referencias manuales\n"
-        "/horarios - Horarios gratis\n"
-        "/precios - Planes premium",
-        reply_markup=admin_keyboard()
-    )
+        f"👋 Hola *{nombre}*! Bienvenido al bot.\n\n"
+        "📋 *MENÚ DE COMANDOS*\n━━━━━━━━━━━━━━━━━\n\n"
+        "🧾 /comprobante — Generar comprobante\n"
+        "📅 /fechas — Activar fecha manual\n"
+        "🔢 /refes — Activar referencia manual\n"
+        "💵 /precios — Ver planes y precios\n"
+        "📲 /sms — Paquetes SMS\n"
+        "🕰️ /horarios — Horarios de acceso gratis\n"
+        "🔲 /brqr — Comprobante por QR\n"
+        "✅ /verificar — Verificar tu membresía\n"
+        "❌ /cancelar — Cancelar operación actual\n\n"
+        "━━━━━━━━━━━━━━━━━\nUsa /comprobante para empezar 👇",
+        parse_mode='Markdown', reply_markup=admin_keyboard())
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-
-    if update.effective_chat.type in ("group", "supergroup") and chat_id != ALLOWED_GROUP:
-        return
-
-    if not await verificar_acceso(update, context):
-        return
-
-    # FIX: Limpiar sesión anterior si existe al iniciar nuevo comprobante
-    limpiar_usuario(user_id)
-
+    if auth_system.is_banned(user_id):
+        await update.message.reply_text("Estás baneado. Contacta al administrador."); return
+    if not await is_member_of_group(context.bot, user_id):
+        await update.message.reply_text("⚠️ *Acceso Denegado*\n\nDebes unirte al grupo oficial para usar el bot.",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📲 Unirse al Grupo", url="https://t.me/nequixxx")]])); return
+    if not auth_system.can_use_bot(user_id, chat_id) and not auth_system.gratis_mode:
+        await update.message.reply_text("🔴 *Bot en Modo OFF*\n\n💰 Contacta a un administrador para acceso premium.",
+            parse_mode='Markdown', reply_markup=admin_keyboard()); return
+    if not auth_system.gratis_mode and auth_system.can_use_bot(user_id, chat_id):
+        await update.message.reply_text("<b>✅ Usuario VIP autorizado 24/7</b>", parse_mode='HTML')
+    keyboard = [
+        [KeyboardButton("💚 Nequi"),          KeyboardButton("🔴 Daviplata")],
+        [KeyboardButton("🔵 Bre B"),           KeyboardButton("🟣 Transfiya")],
+        [KeyboardButton("🏦 BC a NQ"),         KeyboardButton("🏦 BC QR")],
+        [KeyboardButton("💰 Ahorros"),         KeyboardButton("💳 Corriente")],
+        [KeyboardButton("🟢 Nequi Corriente"), KeyboardButton("🟢 Nequi Ahorros")],
+        [KeyboardButton("📷 QR Escanear"),     KeyboardButton("❌ Anulado")],
+        [KeyboardButton("🔲 Nequi QR")]
+    ]
     await update.message.reply_text(
-        "✅ Selecciona el tipo de comprobante:",
-        reply_markup=main_keyboard()
-    )
+        f"╔══════════════════╗\n      🧾 *COMPROBANTES*\n╚══════════════════╝\n\n"
+        f"👋 Hola *{update.effective_user.first_name or 'Usuario'}*!\n"
+        f"Selecciona el tipo de comprobante que deseas generar 👇",
+        parse_mode='Markdown',
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False))
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ═══════════════════════════════════════════════
+# SMS COMANDOS
+# ═══════════════════════════════════════════════
+async def sms_ofertas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(SMS_ANUNCIO, parse_mode='Markdown', reply_markup=sms_anuncio_kb())
+
+async def sms_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.message.reply_text(SMS_ANUNCIO, parse_mode='Markdown', reply_markup=sms_anuncio_kb())
+
+async def smss_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-
-    if not await verificar_acceso(update, context):
-        return
-
-    if user_id in user_data_store:
-        await update.message.reply_text("⏳ Ya tienes una operación en curso. Usa /cancelar para reiniciar.")
-        return
-
-    await update.message.reply_text("🔍 Leyendo QR...")
+    if not auth_system.is_admin(user_id):
+        await update.message.reply_text("❌ Solo admins."); return
+    if len(context.args) != 2:
+        await update.message.reply_text("Uso: /smss <id_usuario> <cantidad>\nEjemplo: /smss 123456789 100"); return
     try:
-        import cv2
-        import numpy as np
-        photo     = update.message.photo[-1]
-        file      = await context.bot.get_file(photo.file_id)
-        file_bytes = await file.download_as_bytearray()
-        nparr     = np.frombuffer(file_bytes, np.uint8)
-        img       = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        detector  = cv2.QRCodeDetector()
-        contenido, _, _ = detector.detectAndDecode(img)
-        if not contenido:
-            await update.message.reply_text("❌ No se pudo leer el QR. Intenta con otra imagen.")
-            return
-        nombre_negocio = extraer_nombre_qr(contenido)[:30].strip()
-        user_data_store[user_id] = {"step": "qr_monto", "tipo": "comprobante_qr", "nombre": nombre_negocio}
-        actualizar_actividad(user_id)
+        tid = int(context.args[0]); cant = int(context.args[1])
+        if cant <= 0: await update.message.reply_text("❌ Cantidad debe ser mayor a 0."); return
+        total = recargar_sms(tid, cant)
         await update.message.reply_text(
-            f"✅ *QR leído*\n\n🏪 *Negocio:* {nombre_negocio}\n\n💰 ¿Cuánto es el monto?",
-            parse_mode="Markdown"
-        )
+            f"✅ *SMS Recargados*\n\n👤 Usuario: `{tid}`\n➕ Recarga: {cant} SMS\n💳 Total: {total} SMS",
+            parse_mode='Markdown')
+        try:
+            await context.bot.send_message(chat_id=tid,
+                text=f"📲 *¡SMS Recargados!*\n\nTe han recargado *{cant} SMS*.\nTotal disponible: *{total} SMS*.",
+                parse_mode='Markdown')
+        except: pass
+        await notify_main_admin(context, user_id, update.effective_user.first_name, f"Recargó {cant} SMS", str(tid))
+    except ValueError:
+        await update.message.reply_text("❌ ID o cantidad inválida.")
+
+async def autorizarsms_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not auth_system.is_admin(uid):
+        await update.message.reply_text("❌ Solo admins."); return
+    if not context.args:
+        await update.message.reply_text("Uso: /autorizarsms <id>\nEjemplo: /autorizarsms 123456789"); return
+    try:
+        tid = int(context.args[0])
+        autorizar_sms(tid)
+        await update.message.reply_text(
+            f"✅ *Usuario `{tid}` autorizado para SMS*\n\n"
+            f"Ahora puede enviar SMS al generar comprobantes.\n"
+            f"Recuerda recargarle créditos con `/smss {tid} 100`",
+            parse_mode='Markdown')
+        try:
+            await context.bot.send_message(chat_id=tid, parse_mode="Markdown",
+                text="✅ *¡Autorizado para SMS!*\n\n"
+                     "El ADM te autorizó a usar el servicio SMS.\n"
+                     "Cuando generes comprobantes, podrás enviar SMS al destinatario. 📲\n\n"
+                     "Usa /sms para ver los paquetes disponibles.")
+        except: pass
+        await notify_main_admin(context, uid, update.effective_user.first_name, "Autorizó SMS a usuario", str(tid))
+    except ValueError:
+        await update.message.reply_text("❌ ID inválido.")
+
+async def desautorizarsms_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not auth_system.is_admin(uid):
+        await update.message.reply_text("❌ Solo admins."); return
+    if not context.args:
+        await update.message.reply_text("Uso: /desautorizarsms <id>"); return
+    try:
+        tid = int(context.args[0])
+        desautorizar_sms(tid)
+        await update.message.reply_text(f"🚫 Usuario `{tid}` desautorizado para SMS.", parse_mode='Markdown')
+    except ValueError:
+        await update.message.reply_text("❌ ID inválido.")
+
+# ═══════════════════════════════════════════════
+# PANEL SMS
+# ═══════════════════════════════════════════════
+async def panelsms_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not auth_system.is_admin(user_id):
+        await update.message.reply_text("❌ Solo admins."); return
+    c = cargar_sms_creditos()
+    a = cargar_sms_autorizados()
+    await update.message.reply_text(
+        f"📲 *PANEL SMS — ADMINISTRACIÓN*\n━━━━━━━━━━━━━━━━━\n\n"
+        f"👥 Usuarios con SMS: *{len(c)}*\n💳 Total en circulación: *{sum(c.values())}*\n"
+        f"🔑 Usuarios autorizados SMS: *{len(a)}*\n\n"
+        "━━━━━━━━━━━━━━━━━\n⚙️ *COMANDOS SMS:*\n\n"
+        "📥 `/smss <ID> <cant>` — Recargar SMS\n"
+        "✅ `/autorizarsms <ID>` — Autorizar usuario para SMS\n"
+        "❌ `/desautorizarsms <ID>` — Quitar autorización SMS\n"
+        "🔍 `/smschk <ID>` — Ver SMS de usuario\n"
+        "📋 `/smslista` — Ver todos los saldos\n\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        "💡 SMS automáticos al agregar VIP:\n• 30d→100 • 60d→200 • 90d→300\n\n"
+        "⚠️ *El usuario debe ser autorizado por el ADM para poder usar SMS.*",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 Ver Saldos", callback_data="panelsms_lista"),
+             InlineKeyboardButton("📊 Stats", callback_data="panelsms_stats")],
+            [InlineKeyboardButton("🔄 Recargar SMS", callback_data="panelsms_recargar")],
+            [InlineKeyboardButton("✅ Activar VIP + SMS", callback_data="panelsms_activar_vip")]]))
+
+async def smschk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not auth_system.is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Solo admins."); return
+    if not context.args:
+        await update.message.reply_text("Uso: /smschk <id>"); return
+    try:
+        tid = int(context.args[0]); sms = get_sms_restantes(tid)
+        v = cargar_vencimientos(); info = v.get(str(tid))
+        autorizado = sms_autorizado(tid)
+        txt = f"🔍 *Info SMS*\n\n🆔 ID: `{tid}`\n💳 SMS disponibles: *{sms}*\n🔑 Autorizado SMS: *{'✅ Sí' if autorizado else '❌ No'}*\n"
+        if info:
+            txt += f"📅 VIP vence: {info.get('fecha_vence','N/A')}\n👤 Nombre: {info.get('nombre','N/A')}"
+        else:
+            txt += "⚠️ Sin membresía VIP activa"
+        await update.message.reply_text(txt, parse_mode='Markdown')
+    except ValueError:
+        await update.message.reply_text("❌ ID inválido.")
+
+async def smslista_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not auth_system.is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Solo admins."); return
+    c = cargar_sms_creditos(); v = cargar_vencimientos(); a = cargar_sms_autorizados()
+    if not c: await update.message.reply_text("📭 No hay usuarios con SMS."); return
+    lineas = ["📋 *LISTA SMS USUARIOS*\n━━━━━━━━━━━━━━━━━\n"]
+    for uid_str, sms in sorted(c.items(), key=lambda x: -x[1]):
+        nombre = v.get(uid_str, {}).get("nombre", "Desconocido")
+        aut = "✅" if uid_str in a else "❌"
+        lineas.append(f"👤 `{uid_str}` ({nombre}): *{sms} SMS* {aut}")
+    txt = "\n".join(lineas)
+    if len(txt) > 4000: txt = txt[:4000] + "\n...(truncado)"
+    await update.message.reply_text(txt, parse_mode='Markdown')
+
+async def panelsms_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; user_id = q.from_user.id
+    if not auth_system.is_admin(user_id):
+        await q.answer("⛔ Sin permisos.", show_alert=True); return
+    await q.answer()
+    c = cargar_sms_creditos(); v = cargar_vencimientos()
+    if q.data == "panelsms_lista":
+        if not c: await q.message.reply_text("📭 Sin datos."); return
+        a = cargar_sms_autorizados()
+        lineas = ["📋 *SALDOS SMS*\n━━━━━━━━━━━━━━━━━\n"]
+        for uid_str, sms in sorted(c.items(), key=lambda x: -x[1])[:20]:
+            nombre = v.get(uid_str, {}).get("nombre", "Desconocido")
+            aut = "✅" if uid_str in a else "❌"
+            lineas.append(f"👤 `{uid_str}` ({nombre}): *{sms} SMS* {aut}")
+        await q.message.reply_text("\n".join(lineas), parse_mode='Markdown')
+    elif q.data == "panelsms_stats":
+        a = cargar_sms_autorizados()
+        total = sum(c.values())
+        await q.edit_message_text(
+            f"📊 *Estadísticas SMS*\n\n💳 Total: *{total}*\n✅ Con SMS: *{sum(1 for x in c.values() if x>0)}*\n"
+            f"⚠️ Sin SMS: *{sum(1 for x in c.values() if x==0)}*\n🔑 Autorizados: *{len(a)}*",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="panelsms_back")]]))
+    elif q.data == "panelsms_recargar":
+        await q.message.reply_text("📥 Usa:\n`/smss <ID> <cantidad>`\n\nEjemplo: `/smss 123456789 100`", parse_mode='Markdown')
+    elif q.data == "panelsms_activar_vip":
+        await q.message.reply_text(
+            "✅ Usa `/agregar` para activar VIP.\n"
+            "Los SMS se asignan automáticamente.\n\n"
+            "Luego autoriza con:\n`/autorizarsms <ID>`", parse_mode='Markdown')
+    elif q.data == "panelsms_back":
+        a = cargar_sms_autorizados()
+        await q.edit_message_text(
+            f"📲 *PANEL SMS*\n\n👥 Usuarios: *{len(c)}*\n💳 Total: *{sum(c.values())}*\n🔑 Autorizados: *{len(a)}*",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📋 Ver Saldos", callback_data="panelsms_lista"),
+                 InlineKeyboardButton("📊 Stats", callback_data="panelsms_stats")],
+                [InlineKeyboardButton("🔄 Recargar SMS", callback_data="panelsms_recargar")],
+                [InlineKeyboardButton("✅ Activar VIP + SMS", callback_data="panelsms_activar_vip")]]))
+
+# ═══════════════════════════════════════════════
+# HANDLE PHOTO
+# ═══════════════════════════════════════════════
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id; chat_id = update.effective_chat.id
+    if auth_system.is_banned(user_id):
+        await update.message.reply_text("Estás baneado."); return
+    if not auth_system.gratis_mode and not auth_system.can_use_bot(user_id, chat_id):
+        await update.message.reply_text("⛔ No tienes acceso.", reply_markup=admin_keyboard()); return
+    if user_id in user_data_store and user_data_store[user_id].get("step") == "brqr_esperando_foto":
+        await update.message.reply_text("🔍 Leyendo código QR...")
+        try:
+            import cv2, numpy as np
+            photo = update.message.photo[-1]; file = await context.bot.get_file(photo.file_id)
+            fb = await file.download_as_bytearray()
+            img = cv2.imdecode(np.frombuffer(fb, np.uint8), cv2.IMREAD_COLOR)
+            contenido, _, _ = cv2.QRCodeDetector().detectAndDecode(img)
+            if not contenido:
+                await update.message.reply_text("❌ No se pudo leer el QR. Usa /brqr modo manual.")
+                del user_data_store[user_id]; return
+            nombre = extraer_nombre_qr(contenido)[:40].strip()
+            user_data_store[user_id]["nombre"] = nombre
+            user_data_store[user_id]["step"] = "brqr_monto"
+            await update.message.reply_text(f"✅ *QR leído*\n\n🏪 *Negocio:* `{nombre}`\n\n💰 ¿Cuánto es el monto?", parse_mode="Markdown")
+        except ImportError:
+            await update.message.reply_text("❌ Error QR. Usa /brqr modo manual."); del user_data_store[user_id]
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}\n\nUsa /brqr modo manual."); del user_data_store[user_id]
+        return
+    if user_id in user_data_store: return
+    await update.message.reply_text("🔍 Leyendo código QR...")
+    try:
+        import cv2, numpy as np
+        photo = update.message.photo[-1]; file = await context.bot.get_file(photo.file_id)
+        fb = await file.download_as_bytearray()
+        img = cv2.imdecode(np.frombuffer(fb, np.uint8), cv2.IMREAD_COLOR)
+        contenido, _, _ = cv2.QRCodeDetector().detectAndDecode(img)
+        if not contenido:
+            await update.message.reply_text("❌ No se pudo leer el QR."); return
+        nombre = extraer_nombre_qr(contenido)[:30].strip()
+        user_data_store[user_id] = {"step": "qr_monto", "tipo": "comprobante_qr", "nombre": nombre}
+        await update.message.reply_text(f"✅ *QR leído*\n\n🏪 *Negocio:* {nombre}\n\n💰 ¿Cuánto es el monto?", parse_mode="Markdown")
     except ImportError:
-        await update.message.reply_text("❌ cv2 no instalado. Usa el flujo manual.")
+        await update.message.reply_text("❌ Error QR. Usa /brqr modo manual.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error leyendo QR: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
 
+# ═══════════════════════════════════════════════
+# HANDLE MESSAGE — flujo principal
+# ═══════════════════════════════════════════════
+BUTTON_MAPPING = {
+    "💚 Nequi":           "comprobante1",
+    "🟣 Transfiya":        "comprobante4",
+    "🔴 Daviplata":        "comprobante_daviplata",
+    "🔲 Nequi QR":         "comprobante_qr",
+    "🔵 Bre B":            "comprobante_nuevo",
+    "❌ Anulado":          "comprobante_anulado",
+    "💰 Ahorros":          "comprobante_ahorros",
+    "💳 Corriente":        "comprobante_corriente",
+    "🏦 BC a NQ":          "comprobante_bc_nq_t",
+    "🏦 BC QR":            "comprobante_bc_qr",
+    "🟢 Nequi Corriente":  "comprobante_nequi_bc",
+    "🟢 Nequi Ahorros":    "comprobante_nequi_ahorros",
+    "📷 QR Escanear":      "brqr_directo",
+}
 
-# ══════════════════════════════════════════════════════════════════════════
-# MANEJADOR PRINCIPAL DE MENSAJES
-# ══════════════════════════════════════════════════════════════════════════
+PROMPTS = {
+    "comprobante1":           "👤 Ingresa el *nombre* del destinatario:",
+    "comprobante4":           "📱 Ingresa el *número* a transferir (10 dígitos, empieza en 3):",
+    "comprobante_qr":         "🏪 Ingresa el *nombre del negocio*:",
+    "comprobante_nuevo":      "👤 Ingresa el *nombre*:",
+    "comprobante_anulado":    "👤 Ingresa el *nombre*:",
+    "comprobante_corriente":  "👤 Ingresa el *nombre*:",
+    "comprobante_daviplata":  "👤 Ingresa el *nombre* del titular Daviplata:",
+    "comprobante_ahorros":    "👤 Ingresa el *nombre*:",
+    "comprobante_bc_nq_t":    "📱 Ingresa el *número de teléfono* (10 dígitos, empieza en 3):",
+    "comprobante_bc_qr":      "📝 Ingresa la *descripción del QR*:",
+    "comprobante_nequi_bc":   "👤 Ingresa el *nombre*:",
+    "comprobante_nequi_ahorros": "👤 Ingresa el *nombre*:",
+}
+
+STEP_HINTS = {
+    0:                    "👤 Ingresa el *nombre* del destinatario:",
+    1:                    "📱 Ingresa el *número de teléfono* (10 dígitos, empieza en 3):",
+    2:                    "💰 Ingresa el *valor* a transferir (solo números, ej: 50000):",
+    3:                    "📅 Ingresa la *fecha* (ej: 28/02/2026 10:30 AM):",
+    10:                   "🔢 Ingresa la *referencia* (ej: M12345678):",
+    20:                   "📱 Ingresa el *número para SMS* (10 dígitos) o escribe `omitir`:",
+    "brqr_nombre_manual": "✏️ Escribe el *nombre del negocio*:",
+    "brqr_monto":         "💰 Ingresa el *monto* (solo números, ej: 50000):",
+    "qr_monto":           "💰 Ingresa el *monto* (solo números, ej: 50000):",
+}
+
+BASURA = {".", "..", "...", ",", "-", "_", "/", "\\", "!", "?", " ", "  "}
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # FIX CRÍTICO: try/except global — si algo falla el bot nunca queda mudo
-    try:
-        await _handle_message_inner(update, context)
-    except Exception:
-        logging.error(f"[handle_message] Error fatal:\n{traceback.format_exc()}")
-        user_id = update.effective_user.id
-        limpiar_usuario(user_id)
-        try:
-            await update.message.reply_text(
-                "⚠️ Ocurrió un error inesperado. Usa /comprobante para intentar de nuevo.",
-                reply_markup=main_keyboard()
-            )
-        except Exception:
-            pass
-
-
-async def _handle_message_inner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    text    = update.message.text.strip()
+    text    = (update.message.text or "").strip()
 
-    if update.effective_chat.type in ("group", "supergroup") and chat_id != ALLOWED_GROUP:
+    if not text:
         return
 
-    if auth_system.is_banned(user_id):
-        await update.message.reply_text("🚫 Estás baneado.")
-        return
+    if user_id in user_data_store and text in BASURA:
+        step = user_data_store[user_id].get("step")
+        hint = STEP_HINTS.get(step, "⚠️ Continúa ingresando los datos correctamente.")
+        await update.message.reply_text(hint, parse_mode="Markdown"); return
 
-    button_mapping = {
-        "Nequi":            "comprobante1",
-        "Transfiya":        "comprobante4",
-        "Daviplata":        "comprobante_daviplata",
-        "Nequi QR":         "comprobante_qr",
-        "Bre B":            "comprobante_nuevo",
-        "Anulado":          "comprobante_anulado",
-        "Ahorros":          "comprobante_ahorros",
-        "Corriente":        "comprobante_corriente",
-        "BC a NQ":          "comprobante_bc_nq_t",
-        "BC QR":            "comprobante_bc_qr",
-        "Nequi Corriente":  "comprobante_nequi_bc",
-        "Nequi Ahorros":    "comprobante_nequi_ahorros",
-    }
+    # ── brqr nombre manual ──
+    if user_id in user_data_store and user_data_store[user_id].get("step") == "brqr_nombre_manual":
+        nombre = parse_nombre(text)
+        if not nombre:
+            await update.message.reply_text("❌ Nombre muy corto. Escribe el nombre del negocio:"); return
+        user_data_store[user_id]["nombre"] = nombre
+        user_data_store[user_id]["step"]   = "brqr_monto"
+        await update.message.reply_text(f"🏪 Negocio: *{nombre}*\n\n💰 ¿Cuánto es el monto?", parse_mode="Markdown"); return
 
-    # ── Botones del menú ──────────────────────────────────────────────────
-    if text in button_mapping:
-        if not await verificar_acceso(update, context):
-            return
-        # FIX: Limpiar sesión anterior al seleccionar nuevo tipo
-        limpiar_usuario(user_id)
-        tipo = button_mapping[text]
-        user_data_store[user_id] = {"step": 0, "tipo": tipo}
-        actualizar_actividad(user_id)
-        prompts = {
-            "comprobante1":          "👤 ¿Nombre del destinatario?",
-            "comprobante4":          "📱 ¿Número a transferir? (10 dígitos, empieza en 3)",
-            "comprobante_qr":        "🏪 ¿Nombre del negocio?",
-            "comprobante_nuevo":     "👤 ¿Nombre del destinatario?",
-            "comprobante_anulado":   "👤 ¿Nombre?",
-            "comprobante_corriente": "👤 ¿Nombre?",
-            "comprobante_daviplata": "👤 ¿Nombre de quien envía?",
-            "comprobante_ahorros":   "👤 ¿Nombre?",
-            "comprobante_bc_nq_t":   "📱 ¿Número de teléfono? (10 dígitos, empieza en 3)",
-            "comprobante_bc_qr":     "📲 ¿Descripción del QR?",
-            "comprobante_nequi_bc":  "👤 ¿Nombre?",
-            "comprobante_nequi_ahorros": "👤 ¿Nombre?",
-        }
-        await update.message.reply_text(prompts.get(tipo, "Ingresa los datos:"))
-        return
-
-    # ── QR por foto: esperando monto ──────────────────────────────────────
-    if user_id in user_data_store and user_data_store[user_id].get("step") == "qr_monto":
-        data   = user_data_store[user_id]
-        limpio = limpiar_valor(text)
-        if not limpio.replace("-", "", 1).isdigit():
-            await update.message.reply_text("❌ Ingresa un valor numérico. Ejemplo: 50000")
-            return
-        valor = int(limpio)
-        if valor < 1000:
-            await update.message.reply_text("❌ El mínimo es $1,000")
-            return
+    # ── brqr monto ──
+    if user_id in user_data_store and user_data_store[user_id].get("step") == "brqr_monto":
+        data = user_data_store[user_id]
+        try: valor = parse_valor(text)
+        except: await update.message.reply_text("❌ El valor debe ser numérico. Ej: 50000"); return
+        if valor < 1000: await update.message.reply_text("❌ Mínimo $1,000."); return
         data["valor"] = valor
-        actualizar_actividad(user_id)
-        await mostrar_confirmacion(update, user_id, data, data["tipo"])
-        return
+        await update.message.reply_text("⏳ Generando comprobante QR...")
+        try:
+            out = generar_comprobante(data, COMPROBANTE_QR_CONFIG)
+            with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
+            os.remove(out)
+            dm = {"nombre": (data.get("nombre") or "").upper(), "valor": -abs(valor)}
+            out2 = generar_comprobante(dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
+            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
+            os.remove(out2)
+            await send_success_message(update)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error generando comprobante: {e}")
+        del user_data_store[user_id]; return
 
-    # ── Sin sesión activa ─────────────────────────────────────────────────
-    if user_id not in user_data_store:
-        return
+    # ── qr_monto (QR libre desde foto) ──
+    if user_id in user_data_store and user_data_store[user_id].get("step") == "qr_monto":
+        data = user_data_store[user_id]
+        try: valor = parse_valor(text)
+        except: await update.message.reply_text("❌ El valor debe ser numérico. Ej: 50000"); return
+        if valor < 1000: await update.message.reply_text("❌ Mínimo $1,000."); return
+        data["valor"] = valor
+        await update.message.reply_text("⏳ Generando comprobante QR...")
+        try:
+            out = generar_comprobante(data, COMPROBANTE_QR_CONFIG)
+            with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
+            os.remove(out)
+            dm = {"nombre": (data.get("nombre") or "").upper(), "valor": -abs(valor)}
+            out2 = generar_comprobante(dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
+            with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
+            os.remove(out2)
+            await send_success_message(update)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error generando comprobante: {e}")
+        del user_data_store[user_id]; return
+
+    # ══════════════════════════════════════════════
+    # Botón del menú → cancela flujo anterior y reinicia
+    # ══════════════════════════════════════════════
+    if text in BUTTON_MAPPING:
+        if user_id in user_data_store:
+            del user_data_store[user_id]
+        if auth_system.is_banned(user_id):
+            await update.message.reply_text("Estás baneado."); return
+        if not auth_system.gratis_mode:
+            if not auth_system.can_use_bot(user_id, chat_id):
+                await update.message.reply_text("🔴 Bot en Modo OFF\n\nContacta a un administrador:", reply_markup=admin_keyboard()); return
+            else:
+                await update.message.reply_text("<b>✅ Usuario VIP autorizado 24/7</b>", parse_mode='HTML')
+        if not await is_member_of_group(context.bot, user_id):
+            await update.message.reply_text("⚠️ Debes unirte al grupo oficial para usar el bot.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📲 Unirse", url="https://t.me/nequixxx")]])); return
+        tipo = BUTTON_MAPPING[text]
+        if tipo == "brqr_directo":
+            await update.message.reply_text("🔲 *Generador Comprobante QR*\n\n¿Cómo quieres ingresar el nombre?",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📷 Escanear QR", callback_data="brqr_scan"),
+                    InlineKeyboardButton("✏️ Ingresar Manual", callback_data="brqr_manual")]])); return
+        user_data_store[user_id] = {"step": 0, "tipo": tipo}
+        await update.message.reply_text(PROMPTS.get(tipo, "Ingresa los datos:"), parse_mode="Markdown"); return
+
+    if user_id not in user_data_store: return
+    if auth_system.is_banned(user_id):
+        await update.message.reply_text("Estás baneado."); return
 
     data = user_data_store[user_id]
-    tipo = data["tipo"]
-    step = data["step"]
+    tipo = data.get("tipo")
+    step = data.get("step")
 
-    # FIX: Actualizar actividad en cada mensaje
-    actualizar_actividad(user_id)
+    if not tipo:
+        del user_data_store[user_id]; return
 
-    # Esperando confirmación de botones
-    if data.get("_pendiente"):
-        await update.message.reply_text("⏳ Por favor confirma o cancela la operación de arriba 👆")
-        return
-
-    # ══════════════════════════════════════════════════════════════════════
-    # FLUJOS POR TIPO
-    # ══════════════════════════════════════════════════════════════════════
-
-    # ── AGREGAR USUARIO (admin) ───────────────────────────────────────────
-    if tipo == "agregar_usuario":
+    # ─────────────────────────────────────────
+    # COMPROBANTE 1 — NEQUI
+    # ─────────────────────────────────────────
+    if tipo == "comprobante1":
         if step == 0:
-            if not text.strip().isdigit():
-                await update.message.reply_text("❌ El ID debe ser numérico.\nEjemplo: 7422843477\n\n/cancelar para salir")
-                return
-            data["target_user_id"] = int(text.strip())
-            data["step"] = 1
+            nombre = parse_nombre(text)
+            if not nombre:
+                await update.message.reply_text("❌ Nombre inválido. Ingresa el nombre completo del destinatario:"); return
+            data["nombre"] = nombre; data["step"] = 1
+            await update.message.reply_text("📱 Ingresa el *número de teléfono* del destinatario (10 dígitos, empieza en 3):", parse_mode="Markdown")
+        elif step == 1:
+            tel = parse_tel(text)
+            if not tel:
+                await update.message.reply_text("❌ Número inválido. Debe tener 10 dígitos y empezar en 3.\nEjemplo: 3001234567"); return
+            data["telefono"] = tel; data["step"] = 2
+            await update.message.reply_text("💰 Ingresa el *valor* a transferir (ej: 50000):", parse_mode="Markdown")
+        elif step == 2:
+            try: v = parse_valor(text)
+            except: await update.message.reply_text("❌ Valor inválido. Solo números.\nEjemplo: 50000"); return
+            if v < 1000: await update.message.reply_text("❌ Mínimo $1,000"); return
+            data["valor"] = v
+            if referencia_manual_mode.get(user_id):
+                data["step"] = 10; await update.message.reply_text("🔢 Ingresa la referencia\nEjemplo: M12345678"); return
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 3; await update.message.reply_text("📅 Ingresa la fecha\nEjemplo: 28/02/2026 10:30 AM"); return
+            await _gen_nequi(update, data, v)
+        elif step == 3:
+            data["fecha_manual"] = text; await _gen_nequi(update, data, data["valor"])
+        elif step == 10:
+            data["referencia_manual"] = text
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 11; await update.message.reply_text("📅 Ingresa la fecha\nEjemplo: 28/02/2026 10:30 AM"); return
+            await _gen_nequi(update, data, data["valor"])
+        elif step == 11:
+            data["fecha_manual"] = text; await _gen_nequi(update, data, data["valor"])
+
+    # ─────────────────────────────────────────
+    # COMPROBANTE 4 — TRANSFIYA
+    # ─────────────────────────────────────────
+    elif tipo == "comprobante4":
+        if step == 0:
+            tel = parse_tel(text)
+            if not tel:
+                await update.message.reply_text("❌ Número inválido. Debe tener 10 dígitos y empezar en 3.\nEjemplo: 3001234567"); return
+            data["telefono"] = tel; data["step"] = 1
+            await update.message.reply_text("💰 Ingresa el *valor* a transferir (ej: 50000):", parse_mode="Markdown")
+        elif step == 1:
+            try: v = parse_valor(text)
+            except: await update.message.reply_text("❌ Valor inválido. Solo números.\nEjemplo: 50000"); return
+            if v < 1000: await update.message.reply_text("❌ Mínimo $1,000"); return
+            data["valor"] = v
+            if referencia_manual_mode.get(user_id):
+                data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 2; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_transfiya(update, data, v)
+        elif step == 2:
+            data["fecha_manual"] = text; await _gen_transfiya(update, data, data["valor"])
+        elif step == 10:
+            data["referencia_manual"] = text
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_transfiya(update, data, data["valor"])
+        elif step == 11:
+            data["fecha_manual"] = text; await _gen_transfiya(update, data, data["valor"])
+
+    # ─────────────────────────────────────────
+    # COMPROBANTE QR — NEQUI QR
+    # ─────────────────────────────────────────
+    elif tipo == "comprobante_qr":
+        if step == 0:
+            nombre = parse_nombre(text)
+            if not nombre:
+                await update.message.reply_text("❌ Nombre inválido. Ingresa el nombre del negocio:"); return
+            data["nombre"] = nombre; data["step"] = 1
+            await update.message.reply_text("💰 Ingresa el *valor* (ej: 50000):", parse_mode="Markdown")
+        elif step == 1:
+            try: v = parse_valor(text)
+            except: await update.message.reply_text("❌ Valor inválido. Solo números.\nEjemplo: 50000"); return
+            if v < 1000: await update.message.reply_text("❌ Mínimo $1,000"); return
+            data["valor"] = v
+            if referencia_manual_mode.get(user_id):
+                data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 2; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_nequi_qr(update, data, v)
+        elif step == 2:
+            data["fecha_manual"] = text; await _gen_nequi_qr(update, data, data["valor"])
+        elif step == 10:
+            data["referencia_manual"] = text
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_nequi_qr(update, data, data["valor"])
+        elif step == 11:
+            data["fecha_manual"] = text; await _gen_nequi_qr(update, data, data["valor"])
+
+    # ─────────────────────────────────────────
+    # COMPROBANTE ANULADO
+    # ─────────────────────────────────────────
+    elif tipo == "comprobante_anulado":
+        if step == 0:
+            nombre = parse_nombre(text)
+            if not nombre:
+                await update.message.reply_text("❌ Nombre inválido. Intenta de nuevo:"); return
+            data["nombre"] = nombre; data["step"] = 1
+            await update.message.reply_text("💰 Ingresa el *valor* (ej: 50000):", parse_mode="Markdown")
+        elif step == 1:
+            try: v = parse_valor(text)
+            except: await update.message.reply_text("❌ Valor numérico. Ej: 50000"); return
+            if v < 1000: await update.message.reply_text("❌ Mínimo $1,000"); return
+            data["valor"] = v
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 2; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_anulado(update, data)
+        elif step == 2:
+            data["fecha_manual"] = text; await _gen_anulado(update, data)
+
+    # ─────────────────────────────────────────
+    # COMPROBANTE AHORROS  ✅ CON SMS
+    # ─────────────────────────────────────────
+    elif tipo == "comprobante_ahorros":
+        if step == 0:
+            nombre = parse_nombre(text)
+            if not nombre:
+                await update.message.reply_text("❌ Nombre inválido. Intenta de nuevo:"); return
+            data["nombre"] = nombre; data["step"] = 1
+            await update.message.reply_text("🔢 Ingresa el *número de cuenta* (11 dígitos):", parse_mode="Markdown")
+        elif step == 1:
+            digitos = "".join(c for c in text if c.isdigit())
+            if len(digitos) != 11:
+                await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos"); return
+            data["numero_cuenta"] = text; data["step"] = 2
+            await update.message.reply_text("💰 Ingresa el *valor* (ej: 50000):", parse_mode="Markdown")
+        elif step == 2:
+            try: v = parse_valor(text)
+            except: await update.message.reply_text("❌ Valor inválido. Solo números."); return
+            if v < 1000: await update.message.reply_text("❌ Mínimo $1,000"); return
+            data["valor"] = v
+            # ✅ Pedir teléfono para SMS
+            if sms_autorizado(user_id):
+                data["step"] = 20
+                await update.message.reply_text(
+                    "📱 ¿A qué número enviar el *SMS de notificación*?\n"
+                    "(10 dígitos, empieza en 3)\n\n"
+                    "_Escribe_ `omitir` _si no deseas enviar SMS_",
+                    parse_mode="Markdown")
+            else:
+                if fecha_manual_mode.get(user_id):
+                    data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
+                await _gen_ahorros(update, data, COMPROBANTE_AHORROS_CONFIG, "Ahorros")
+        elif step == 20:  # ✅ SMS teléfono
+            if text.lower() == "omitir":
+                data["sms_tel"] = None
+            else:
+                tel = parse_tel(text)
+                if not tel:
+                    await update.message.reply_text(
+                        "❌ Número inválido. 10 dígitos, empieza en 3.\n"
+                        "O escribe `omitir` para saltar.", parse_mode="Markdown"); return
+                data["sms_tel"] = tel
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_ahorros(update, data, COMPROBANTE_AHORROS_CONFIG, "Ahorros")
+        elif step == 3:
+            data["fecha_manual"] = text
+            await _gen_ahorros(update, data, COMPROBANTE_AHORROS_CONFIG, "Ahorros")
+
+    # ─────────────────────────────────────────
+    # COMPROBANTE CORRIENTE  ✅ CON SMS
+    # ─────────────────────────────────────────
+    elif tipo == "comprobante_corriente":
+        if step == 0:
+            nombre = parse_nombre(text)
+            if not nombre:
+                await update.message.reply_text("❌ Nombre inválido. Intenta de nuevo:"); return
+            data["nombre"] = nombre; data["step"] = 1
+            await update.message.reply_text("🔢 Ingresa el *número de cuenta* (11 dígitos):", parse_mode="Markdown")
+        elif step == 1:
+            digitos = "".join(c for c in text if c.isdigit())
+            if len(digitos) != 11:
+                await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos"); return
+            data["numero_cuenta"] = text; data["step"] = 2
+            await update.message.reply_text("💰 Ingresa el *valor* (ej: 50000):", parse_mode="Markdown")
+        elif step == 2:
+            try: v = parse_valor(text)
+            except: await update.message.reply_text("❌ Valor inválido. Solo números."); return
+            if v < 1000: await update.message.reply_text("❌ Mínimo $1,000"); return
+            data["valor"] = v
+            # ✅ Pedir teléfono para SMS
+            if sms_autorizado(user_id):
+                data["step"] = 20
+                await update.message.reply_text(
+                    "📱 ¿A qué número enviar el *SMS de notificación*?\n"
+                    "(10 dígitos, empieza en 3)\n\n"
+                    "_Escribe_ `omitir` _si no deseas enviar SMS_",
+                    parse_mode="Markdown")
+            else:
+                if fecha_manual_mode.get(user_id):
+                    data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
+                await _gen_ahorros(update, data, COMPROBANTE_AHORROS2_CONFIG, "Corriente")
+        elif step == 20:  # ✅ SMS teléfono
+            if text.lower() == "omitir":
+                data["sms_tel"] = None
+            else:
+                tel = parse_tel(text)
+                if not tel:
+                    await update.message.reply_text(
+                        "❌ Número inválido. 10 dígitos, empieza en 3.\n"
+                        "O escribe `omitir` para saltar.", parse_mode="Markdown"); return
+                data["sms_tel"] = tel
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_ahorros(update, data, COMPROBANTE_AHORROS2_CONFIG, "Corriente")
+        elif step == 3:
+            data["fecha_manual"] = text
+            await _gen_ahorros(update, data, COMPROBANTE_AHORROS2_CONFIG, "Corriente")
+
+    # ─────────────────────────────────────────
+    # DAVIPLATA
+    # ─────────────────────────────────────────
+    elif tipo == "comprobante_daviplata":
+        if step == 0:
+            nombre = parse_nombre(text)
+            if not nombre:
+                await update.message.reply_text("❌ Nombre inválido. Intenta de nuevo:"); return
+            data["nombre"] = nombre; data["step"] = 1
+            await update.message.reply_text("💰 Ingresa el *valor* (ej: 50000):", parse_mode="Markdown")
+        elif step == 1:
+            try: v = parse_valor(text)
+            except: await update.message.reply_text("❌ Valor inválido."); return
+            if v < 1000: await update.message.reply_text("❌ Mínimo $1,000"); return
+            data["valor"] = v; data["step"] = 2
+            await update.message.reply_text("🔢 Ingresa los *4 dígitos* de la cuenta que ENVÍA:", parse_mode="Markdown")
+        elif step == 2:
+            if not text.isdigit() or len(text) != 4:
+                await update.message.reply_text("❌ Exactamente 4 dígitos numéricos"); return
+            data["recibe"] = text; data["step"] = 3
+            await update.message.reply_text("🔢 Ingresa los *4 dígitos* de la cuenta que RECIBE:", parse_mode="Markdown")
+        elif step == 3:
+            if not text.isdigit() or len(text) != 4:
+                await update.message.reply_text("❌ Exactamente 4 dígitos numéricos"); return
+            data["envia"] = text
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 4; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_daviplata(update, data)
+        elif step == 4:
+            data["fecha_manual"] = text; await _gen_daviplata(update, data)
+
+    # ─────────────────────────────────────────
+    # BC a NQ
+    # ─────────────────────────────────────────
+    elif tipo == "comprobante_bc_nq_t":
+        if step == 0:
+            tel = parse_tel(text)
+            if not tel:
+                await update.message.reply_text("❌ Número inválido. 10 dígitos, empieza en 3.\nEjemplo: 3001234567"); return
+            data["telefono"] = tel; data["step"] = 1
+            await update.message.reply_text("💰 Ingresa el *valor* (ej: 50000):", parse_mode="Markdown")
+        elif step == 1:
+            try: v = parse_valor(text)
+            except: await update.message.reply_text("❌ Valor inválido."); return
+            if v < 1000: await update.message.reply_text("❌ Mínimo $1,000"); return
+            data["valor"] = v
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 2; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_bc_nq(update, data, v)
+        elif step == 2:
+            data["fecha_manual"] = text; await _gen_bc_nq(update, data, data["valor"])
+
+    # ─────────────────────────────────────────
+    # BC QR
+    # ─────────────────────────────────────────
+    elif tipo == "comprobante_bc_qr":
+        if step == 0:
+            if not text or len(text.strip()) < 2:
+                await update.message.reply_text("❌ Descripción muy corta. Intenta de nuevo:"); return
+            data["descripcion_qr"] = text; data["step"] = 1
+            await update.message.reply_text("💰 Ingresa el *valor* (ej: 50000):", parse_mode="Markdown")
+        elif step == 1:
+            try: v = parse_valor(text)
+            except: await update.message.reply_text("❌ Valor inválido."); return
+            if v < 1000: await update.message.reply_text("❌ Mínimo $1,000"); return
+            data["valor"] = v; data["step"] = 2
+            await update.message.reply_text("👤 Ingresa el *nombre*:", parse_mode="Markdown")
+        elif step == 2:
+            nombre = parse_nombre(text)
+            if not nombre:
+                await update.message.reply_text("❌ Nombre inválido. Intenta de nuevo:"); return
+            data["nombre"] = nombre; data["step"] = 3
+            await update.message.reply_text("🔢 Ingresa el *número de cuenta* (11 dígitos):", parse_mode="Markdown")
+        elif step == 3:
+            digitos = "".join(c for c in text if c.isdigit())
+            if len(digitos) != 11:
+                await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos"); return
+            data["numero_cuenta"] = text
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 4; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_bc_qr(update, data)
+        elif step == 4:
+            data["fecha_manual"] = text; await _gen_bc_qr(update, data)
+
+    # ─────────────────────────────────────────
+    # NEQUI → CORRIENTE BC  ✅ CON SMS
+    # ─────────────────────────────────────────
+    elif tipo == "comprobante_nequi_bc":
+        if step == 0:
+            nombre = parse_nombre(text)
+            if not nombre:
+                await update.message.reply_text("❌ Nombre inválido. Intenta de nuevo:"); return
+            data["nombre"] = nombre; data["step"] = 1
+            await update.message.reply_text("💰 Ingresa el *valor* (ej: 50000):", parse_mode="Markdown")
+        elif step == 1:
+            try: v = parse_valor(text)
+            except: await update.message.reply_text("❌ Valor inválido."); return
+            if v < 1000: await update.message.reply_text("❌ Mínimo $1,000"); return
+            data["valor"] = v; data["step"] = 2
+            await update.message.reply_text("🔢 Ingresa el *número de cuenta* (11 dígitos):", parse_mode="Markdown")
+        elif step == 2:
+            digitos = "".join(c for c in text if c.isdigit())
+            if len(digitos) != 11:
+                await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos"); return
+            data["numero_cuenta"] = text
+            # ✅ Pedir teléfono para SMS
+            if sms_autorizado(user_id):
+                data["step"] = 20
+                await update.message.reply_text(
+                    "📱 ¿A qué número enviar el *SMS de notificación*?\n"
+                    "(10 dígitos, empieza en 3)\n\n"
+                    "_Escribe_ `omitir` _si no deseas enviar SMS_",
+                    parse_mode="Markdown")
+            else:
+                if referencia_manual_mode.get(user_id):
+                    data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
+                if fecha_manual_mode.get(user_id):
+                    data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
+                await _gen_nequi_bc(update, data)
+        elif step == 20:  # ✅ SMS teléfono
+            if text.lower() == "omitir":
+                data["sms_tel"] = None
+            else:
+                tel = parse_tel(text)
+                if not tel:
+                    await update.message.reply_text(
+                        "❌ Número inválido. 10 dígitos, empieza en 3.\n"
+                        "O escribe `omitir` para saltar.", parse_mode="Markdown"); return
+                data["sms_tel"] = tel
+            if referencia_manual_mode.get(user_id):
+                data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_nequi_bc(update, data)
+        elif step == 3:
+            data["fecha_manual"] = text; await _gen_nequi_bc(update, data)
+        elif step == 10:
+            data["referencia_manual"] = text
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_nequi_bc(update, data)
+        elif step == 11:
+            data["fecha_manual"] = text; await _gen_nequi_bc(update, data)
+
+    # ─────────────────────────────────────────
+    # NEQUI → AHORROS BC  ✅ CON SMS
+    # ─────────────────────────────────────────
+    elif tipo == "comprobante_nequi_ahorros":
+        if step == 0:
+            nombre = parse_nombre(text)
+            if not nombre:
+                await update.message.reply_text("❌ Nombre inválido. Intenta de nuevo:"); return
+            data["nombre"] = nombre; data["step"] = 1
+            await update.message.reply_text("💰 Ingresa el *valor* (ej: 50000):", parse_mode="Markdown")
+        elif step == 1:
+            try: v = parse_valor(text)
+            except: await update.message.reply_text("❌ Valor inválido."); return
+            if v < 1000: await update.message.reply_text("❌ Mínimo $1,000"); return
+            data["valor"] = v; data["step"] = 2
+            await update.message.reply_text("🔢 Ingresa el *número de cuenta* (11 dígitos):", parse_mode="Markdown")
+        elif step == 2:
+            digitos = "".join(c for c in text if c.isdigit())
+            if len(digitos) != 11:
+                await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos"); return
+            data["numero_cuenta"] = text
+            # ✅ Pedir teléfono para SMS
+            if sms_autorizado(user_id):
+                data["step"] = 20
+                await update.message.reply_text(
+                    "📱 ¿A qué número enviar el *SMS de notificación*?\n"
+                    "(10 dígitos, empieza en 3)\n\n"
+                    "_Escribe_ `omitir` _si no deseas enviar SMS_",
+                    parse_mode="Markdown")
+            else:
+                if referencia_manual_mode.get(user_id):
+                    data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
+                if fecha_manual_mode.get(user_id):
+                    data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
+                await _gen_nequi_ahorros(update, data)
+        elif step == 20:  # ✅ SMS teléfono
+            if text.lower() == "omitir":
+                data["sms_tel"] = None
+            else:
+                tel = parse_tel(text)
+                if not tel:
+                    await update.message.reply_text(
+                        "❌ Número inválido. 10 dígitos, empieza en 3.\n"
+                        "O escribe `omitir` para saltar.", parse_mode="Markdown"); return
+                data["sms_tel"] = tel
+            if referencia_manual_mode.get(user_id):
+                data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_nequi_ahorros(update, data)
+        elif step == 3:
+            data["fecha_manual"] = text; await _gen_nequi_ahorros(update, data)
+        elif step == 10:
+            data["referencia_manual"] = text
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_nequi_ahorros(update, data)
+        elif step == 11:
+            data["fecha_manual"] = text; await _gen_nequi_ahorros(update, data)
+
+    # ─────────────────────────────────────────
+    # BRE B (COMPROBANTE NUEVO)
+    # ─────────────────────────────────────────
+    elif tipo == "comprobante_nuevo":
+        if step == 0:
+            nombre = parse_nombre(text)
+            if not nombre:
+                await update.message.reply_text("❌ Nombre inválido. Intenta de nuevo:"); return
+            data["nombre"] = nombre; data["step"] = 1
+            await update.message.reply_text("💰 Ingresa el *valor* (ej: 50000):", parse_mode="Markdown")
+        elif step == 1:
+            try: v = parse_valor(text)
+            except: await update.message.reply_text("❌ Valor numérico. Ej: 50000"); return
+            if v < 1000: await update.message.reply_text("❌ Mínimo $1,000"); return
+            data["valor"] = v; data["step"] = 2
+            await update.message.reply_text("🔑 Ingresa la *llave*:", parse_mode="Markdown")
+        elif step == 2:
+            if not text or len(text.strip()) < 1:
+                await update.message.reply_text("❌ Llave inválida. Intenta de nuevo:"); return
+            data["llave"] = text; data["step"] = 3
+            await update.message.reply_text("🏦 Ingresa el *banco*:", parse_mode="Markdown")
+        elif step == 3:
+            if not text or len(text.strip()) < 1:
+                await update.message.reply_text("❌ Banco inválido. Intenta de nuevo:"); return
+            data["banco"] = text; data["step"] = 4
+            await update.message.reply_text("📱 Ingresa el *número de quien envía* (10 dígitos, empieza en 3):", parse_mode="Markdown")
+        elif step == 4:
+            tel = parse_tel(text)
+            if not tel:
+                await update.message.reply_text("❌ Número inválido. 10 dígitos, empieza en 3.\nEjemplo: 3001234567"); return
+            data["numero_envia"] = tel
+            if referencia_manual_mode.get(user_id):
+                data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 5; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_nuevo(update, data)
+        elif step == 5:
+            data["fecha_manual"] = text; await _gen_nuevo(update, data)
+        elif step == 10:
+            data["referencia_manual"] = text
+            if fecha_manual_mode.get(user_id):
+                data["step"] = 11; await update.message.reply_text("📅 Fecha:"); return
+            await _gen_nuevo(update, data)
+        elif step == 11:
+            data["fecha_manual"] = text; await _gen_nuevo(update, data)
+
+    # ─────────────────────────────────────────
+    # AGREGAR USUARIO (flujo admin)
+    # ─────────────────────────────────────────
+    elif tipo == "agregar_usuario":
+        if step == 0:
+            if not text.isdigit():
+                await update.message.reply_text("❌ ID debe ser numérico. Ingresa el ID de Telegram:"); return
+            data["target_user_id"] = int(text); data["step"] = 1
             await update.message.reply_text("📝 Nombre del usuario:")
         elif step == 1:
-            data["nombre"] = text
-            data["step"] = 2
+            nombre = parse_nombre(text)
+            if not nombre:
+                await update.message.reply_text("❌ Nombre inválido. Intenta de nuevo:"); return
+            data["nombre"] = nombre; data["step"] = 2
             await update.message.reply_text("📅 ¿Cuántos días de acceso? (Ejemplo: 30)")
         elif step == 2:
             if not text.isdigit():
-                await update.message.reply_text("❌ Ingresa un número de días válido")
-                return
+                await update.message.reply_text("❌ Número de días debe ser numérico. Ej: 30"); return
             dias = int(text)
+            if dias < 1:
+                await update.message.reply_text("❌ Mínimo 1 día."); return
             try:
                 auth_system.add_user(data["target_user_id"], data["nombre"])
-                fecha_vence = agregar_vencimiento(data["target_user_id"], data["nombre"], dias)
+                fv  = agregar_vencimiento(data["target_user_id"], data["nombre"], dias)
+                sms = asignar_sms_por_dias(data["target_user_id"], dias)
                 now = datetime.now(pytz.timezone("America/Bogota")).strftime("%d/%m/%Y %H:%M:%S")
                 await update.message.reply_text(
-                    f"✅ *Usuario Agregado*\n\n"
-                    f"👤 ID: `{data['target_user_id']}`\n"
-                    f"📝 Nombre: {data['nombre']}\n"
-                    f"📅 Vence: {fecha_vence}\n"
-                    f"⏳ Días: {dias}\n"
-                    f"🕐 {now}",
-                    parse_mode='Markdown'
-                )
+                    f"✅ *Usuario Agregado*\n\n👤 ID: `{data['target_user_id']}`\n📝 Nombre: {data['nombre']}\n"
+                    f"📅 Vence: {fv}\n⏳ Días: {dias}\n📲 SMS asignados: {sms}\n🕐 {now}\n\n"
+                    f"💡 Para autorizar SMS usa:\n`/autorizarsms {data['target_user_id']}`",
+                    parse_mode='Markdown')
                 try:
-                    await context.bot.send_message(
-                        chat_id=data["target_user_id"],
-                        text=f"✅ *¡Acceso Activado!*\n\n"
-                             f"Hola {data['nombre']}!\n"
-                             f"📅 Vence: *{fecha_vence}*\n"
-                             f"⏳ Duración: *{dias} días*\n\n"
-                             f"Usa /comprobante para empezar.",
-                        parse_mode="Markdown"
-                    )
-                except Exception as e:
-                    logging.error(f"No se notificó a {data['target_user_id']}: {e}")
+                    await context.bot.send_message(chat_id=data["target_user_id"], parse_mode="Markdown",
+                        text=f"✅ *¡Acceso Activado!*\n\nHola {data['nombre']}, tu acceso ha sido activado.\n\n"
+                             f"📅 Vence: *{fv}*\n⏳ Duración: *{dias} días*\n📲 SMS disponibles: *{sms}*\n\n"
+                             f"Usa /comprobante para empezar.")
+                except: pass
                 if user_id != ADMIN_ID:
-                    await context.bot.send_message(
-                        chat_id=ADMIN_ID,
-                        text=f"🔔 *Nuevo usuario agregado*\nID: `{data['target_user_id']}`\nNombre: {data['nombre']}\nVence: {fecha_vence}",
-                        parse_mode='Markdown'
-                    )
-                limpiar_usuario(user_id)
+                    await context.bot.send_message(chat_id=ADMIN_ID, parse_mode='Markdown',
+                        text=f"🔔 *Nuevo VIP agregado*\nID: `{data['target_user_id']}`\nNombre: {data['nombre']}\n"
+                             f"Vence: {fv}\nSMS: {sms}\nPor: {data.get('admin_name','Admin')}")
+                del user_data_store[user_id]
             except Exception as e:
-                await update.message.reply_text(f"❌ Error al agregar usuario: {e}")
-                limpiar_usuario(user_id)
-        return
+                await update.message.reply_text(f"❌ Error: {e}")
+                if user_id in user_data_store: del user_data_store[user_id]
 
-    # ── NEQUI ─────────────────────────────────────────────────────────────
-    if tipo == "comprobante1":
-        if step == 0:
-            data["nombre"] = text
-            data["step"]   = 1
-            await update.message.reply_text("📱 Número de teléfono (10 dígitos, empieza en 3):\nEjemplo: 3001234567")
-        elif step == 1:
-            tel, es_valido = validar_telefono(text)
-            if not es_valido:
-                await update.message.reply_text(
-                    "❌ Número inválido. Debe tener 10 dígitos y empezar en 3.\n"
-                    "Ejemplo: 3001234567\n\n"
-                    "/cancelar para reiniciar"
-                )
-                return
-            data["telefono"] = tel
-            data["step"]     = 2
-            await update.message.reply_text("💰 Valor a transferir:")
-        elif step == 2:
-            limpio = limpiar_valor(text)
-            if not limpio.replace("-", "", 1).isdigit():
-                await update.message.reply_text("❌ Ingresa solo números. Ejemplo: 50000")
-                return
-            v = int(limpio)
-            if v < 1000:
-                await update.message.reply_text("❌ El mínimo es $1,000")
-                return
-            data["valor"] = v
-            if referencia_manual_mode.get(user_id):
-                data["step"] = 10
-                await update.message.reply_text("🔢 Ingresa la referencia:")
-                return
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 3
-                await update.message.reply_text("📅 Ingresa la fecha (Ej: 10/03/2026 12:00):")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 3:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 10:
-            data["referencia_manual"] = text
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 11
-                await update.message.reply_text("📅 Ingresa la fecha (Ej: 10/03/2026 12:00):")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 11:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
+# ═══════════════════════════════════════════════
+# GENERADORES
+# ═══════════════════════════════════════════════
+async def _gen_nequi(update, data, v):
+    try:
+        out = generar_comprobante(data, COMPROBANTE1_CONFIG)
+        with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
+        os.remove(out)
+        dm = data.copy()
+        dm["nombre"] = (data.get("nombre") or "").upper()
+        dm["valor"]  = -abs(v)
+        out2 = generar_comprobante(dm, COMPROBANTE_MOVIMIENTO_CONFIG)
+        with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
+        os.remove(out2)
+        await send_success_message(update, sms_data={"telefono": data.get("telefono"), "valor": v})
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error generando comprobante: {e}")
+    finally:
+        uid = update.effective_user.id
+        if uid in user_data_store: del user_data_store[uid]
 
-    # ── TRANSFIYA ─────────────────────────────────────────────────────────
-    elif tipo == "comprobante4":
-        if step == 0:
-            tel, es_valido = validar_telefono(text)
-            if not es_valido:
-                await update.message.reply_text(
-                    "❌ Número inválido. Debe tener 10 dígitos y empezar en 3.\n"
-                    "Ejemplo: 3001234567\n\n"
-                    "/cancelar para reiniciar"
-                )
-                return
-            data["telefono"] = tel
-            data["step"]     = 1
-            await update.message.reply_text("💰 Valor a transferir:")
-        elif step == 1:
-            limpio = limpiar_valor(text)
-            if not limpio.replace("-", "", 1).isdigit():
-                await update.message.reply_text("❌ Ingresa solo números")
-                return
-            v = int(limpio)
-            if v < 1000:
-                await update.message.reply_text("❌ El mínimo es $1,000")
-                return
-            data["valor"] = v
-            if referencia_manual_mode.get(user_id):
-                data["step"] = 10
-                await update.message.reply_text("🔢 Ingresa la referencia:")
-                return
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 2
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 2:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 10:
-            data["referencia_manual"] = text
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 11
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 11:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
+async def _gen_transfiya(update, data, v):
+    try:
+        out = generar_comprobante(data, COMPROBANTE4_CONFIG)
+        with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
+        os.remove(out)
+        tel = data.get("telefono") or ""
+        dm2 = {"telefono": tel, "valor": -abs(v), "nombre": tel}
+        out2 = generar_comprobante(dm2, COMPROBANTE_MOVIMIENTO2_CONFIG)
+        with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
+        os.remove(out2)
+        await send_success_message(update, sms_data={"telefono": data.get("telefono"), "valor": v})
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error generando comprobante: {e}")
+    finally:
+        uid = update.effective_user.id
+        if uid in user_data_store: del user_data_store[uid]
 
-    # ── NEQUI QR ──────────────────────────────────────────────────────────
-    elif tipo == "comprobante_qr":
-        if step == 0:
-            data["nombre"] = text
-            data["step"]   = 1
-            await update.message.reply_text("💰 Valor:")
-        elif step == 1:
-            limpio = limpiar_valor(text)
-            if not limpio.replace("-", "", 1).isdigit():
-                await update.message.reply_text("❌ Ingresa solo números")
-                return
-            v = int(limpio)
-            if v < 1000:
-                await update.message.reply_text("❌ El mínimo es $1,000")
-                return
-            data["valor"] = v
-            if referencia_manual_mode.get(user_id):
-                data["step"] = 10
-                await update.message.reply_text("🔢 Ingresa la referencia:")
-                return
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 2
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 2:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 10:
-            data["referencia_manual"] = text
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 11
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 11:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
+async def _gen_nequi_qr(update, data, v):
+    try:
+        out = generar_comprobante(data, COMPROBANTE_QR_CONFIG)
+        with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
+        os.remove(out)
+        dm = {"nombre": (data.get("nombre") or "").upper(), "valor": -abs(v)}
+        out2 = generar_comprobante(dm, COMPROBANTE_MOVIMIENTO3_CONFIG)
+        with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
+        os.remove(out2)
+        await send_success_message(update)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error generando comprobante: {e}")
+    finally:
+        uid = update.effective_user.id
+        if uid in user_data_store: del user_data_store[uid]
 
-    # ── ANULADO ───────────────────────────────────────────────────────────
-    elif tipo == "comprobante_anulado":
-        if step == 0:
-            data["nombre"] = text
-            data["step"]   = 1
-            await update.message.reply_text("💰 Valor:")
-        elif step == 1:
-            limpio = limpiar_valor(text)
-            if not limpio.replace("-", "", 1).isdigit():
-                await update.message.reply_text("❌ Ingresa solo números")
-                return
-            v = int(limpio)
-            if v < 1000:
-                await update.message.reply_text("❌ El mínimo es $1,000")
-                return
-            data["valor"] = v
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 2
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 2:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
+async def _gen_anulado(update, data):
+    try:
+        out = generar_comprobante_anulado(data, COMPROBANTE_ANULADO_CONFIG)
+        with open(out,"rb") as f: await update.message.reply_document(document=f, caption="ANULADO")
+        os.remove(out)
+        await send_success_message(update)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error generando comprobante: {e}")
+    finally:
+        uid = update.effective_user.id
+        if uid in user_data_store: del user_data_store[uid]
 
-    # ── AHORROS ───────────────────────────────────────────────────────────
-    elif tipo == "comprobante_ahorros":
-        if step == 0:
-            data["nombre"] = text
-            data["step"]   = 1
-            await update.message.reply_text("🏦 Número de cuenta (11 dígitos):")
-        elif step == 1:
-            digitos = "".join(ch for ch in text if ch.isdigit())
-            if len(digitos) != 11:
-                await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos")
-                return
-            data["numero_cuenta"] = digitos
-            data["step"]          = 2
-            await update.message.reply_text("💰 Valor:")
-        elif step == 2:
-            limpio = limpiar_valor(text)
-            if not limpio.replace("-", "", 1).isdigit():
-                await update.message.reply_text("❌ Ingresa solo números")
-                return
-            v = int(limpio)
-            if v < 1000:
-                await update.message.reply_text("❌ El mínimo es $1,000")
-                return
-            data["valor"] = v
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 3
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 3:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
+async def _gen_ahorros(update, data, config, caption):
+    try:
+        out = generar_comprobante_ahorros(data, config)
+        with open(out,"rb") as f: await update.message.reply_document(document=f, caption=caption)
+        os.remove(out)
+        # ✅ Usa sms_tel si existe
+        sms_data = None
+        if data.get("sms_tel"):
+            sms_data = {"telefono": data["sms_tel"], "valor": data.get("valor", 0)}
+        await send_success_message(update, sms_data=sms_data)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error generando comprobante: {e}")
+    finally:
+        uid = update.effective_user.id
+        if uid in user_data_store: del user_data_store[uid]
 
-    # ── CORRIENTE ─────────────────────────────────────────────────────────
-    elif tipo == "comprobante_corriente":
-        if step == 0:
-            data["nombre"] = text
-            data["step"]   = 1
-            await update.message.reply_text("🏦 Número de cuenta (11 dígitos):")
-        elif step == 1:
-            digitos = "".join(ch for ch in text if ch.isdigit())
-            if len(digitos) != 11:
-                await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos")
-                return
-            data["numero_cuenta"] = digitos
-            data["step"]          = 2
-            await update.message.reply_text("💰 Valor:")
-        elif step == 2:
-            limpio = limpiar_valor(text)
-            if not limpio.replace("-", "", 1).isdigit():
-                await update.message.reply_text("❌ Ingresa solo números")
-                return
-            v = int(limpio)
-            if v < 1000:
-                await update.message.reply_text("❌ El mínimo es $1,000")
-                return
-            data["valor"] = v
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 3
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 3:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
+async def _gen_daviplata(update, data):
+    try:
+        out = generar_comprobante_daviplata(data, COMPROBANTE_DAVIPLATA_CONFIG)
+        with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Daviplata")
+        os.remove(out)
+        await send_success_message(update)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error generando comprobante: {e}")
+    finally:
+        uid = update.effective_user.id
+        if uid in user_data_store: del user_data_store[uid]
 
-    # ── DAVIPLATA ─────────────────────────────────────────────────────────
-    elif tipo == "comprobante_daviplata":
-        if step == 0:
-            data["nombre"] = text
-            data["step"]   = 1
-            await update.message.reply_text("💰 Valor:")
-        elif step == 1:
-            limpio = limpiar_valor(text)
-            if not limpio.replace("-", "", 1).isdigit():
-                await update.message.reply_text("❌ Ingresa solo números")
-                return
-            v = int(limpio)
-            if v < 1000:
-                await update.message.reply_text("❌ El mínimo es $1,000")
-                return
-            data["valor"] = v
-            data["step"]  = 2
-            await update.message.reply_text("📤 Últimos 4 dígitos de la cuenta que ENVÍA:")
-        elif step == 2:
-            digitos = "".join(ch for ch in text if ch.isdigit())
-            if len(digitos) != 4:
-                await update.message.reply_text("❌ Ingresa exactamente 4 dígitos")
-                return
-            data["recibe"] = digitos
-            data["step"]   = 3
-            await update.message.reply_text("📥 Últimos 4 dígitos de la cuenta que RECIBE:")
-        elif step == 3:
-            digitos = "".join(ch for ch in text if ch.isdigit())
-            if len(digitos) != 4:
-                await update.message.reply_text("❌ Ingresa exactamente 4 dígitos")
-                return
-            data["envia"] = digitos
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 4
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 4:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
+async def _gen_bc_nq(update, data, v):
+    try:
+        out = generar_comprobante_bc_nq_t(data, COMPROBANTE_BC_NQ_T_CONFIG)
+        with open(out,"rb") as f: await update.message.reply_document(document=f, caption="BC a NQ")
+        os.remove(out)
+        await send_success_message(update, sms_data={"telefono": data.get("telefono"), "valor": v})
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error generando comprobante: {e}")
+    finally:
+        uid = update.effective_user.id
+        if uid in user_data_store: del user_data_store[uid]
 
-    # ── BC A NQ ───────────────────────────────────────────────────────────
-    elif tipo == "comprobante_bc_nq_t":
-        if step == 0:
-            tel, es_valido = validar_telefono(text)
-            if not es_valido:
-                await update.message.reply_text(
-                    "❌ Número inválido. Debe tener 10 dígitos y empezar en 3.\n"
-                    "Ejemplo: 3001234567\n\n"
-                    "/cancelar para reiniciar"
-                )
-                return
-            data["telefono"] = tel
-            data["step"]     = 1
-            await update.message.reply_text("💰 Valor:")
-        elif step == 1:
-            limpio = limpiar_valor(text)
-            if not limpio.replace("-", "", 1).isdigit():
-                await update.message.reply_text("❌ Ingresa solo números")
-                return
-            v = int(limpio)
-            if v < 1000:
-                await update.message.reply_text("❌ El mínimo es $1,000")
-                return
-            data["valor"] = v
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 2
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 2:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
+async def _gen_bc_qr(update, data):
+    try:
+        out = generar_comprobante_bc_qr(data, COMPROBANTE_BC_QR_CONFIG)
+        with open(out,"rb") as f: await update.message.reply_document(document=f, caption="BC QR")
+        os.remove(out)
+        await send_success_message(update)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error generando comprobante: {e}")
+    finally:
+        uid = update.effective_user.id
+        if uid in user_data_store: del user_data_store[uid]
 
-    # ── BC QR ─────────────────────────────────────────────────────────────
-    elif tipo == "comprobante_bc_qr":
-        if step == 0:
-            data["descripcion_qr"] = text
-            data["step"]           = 1
-            await update.message.reply_text("💰 Valor:")
-        elif step == 1:
-            limpio = limpiar_valor(text)
-            if not limpio.replace("-", "", 1).isdigit():
-                await update.message.reply_text("❌ Ingresa solo números")
-                return
-            v = int(limpio)
-            if v < 1000:
-                await update.message.reply_text("❌ El mínimo es $1,000")
-                return
-            data["valor"] = v
-            data["step"]  = 2
-            await update.message.reply_text("👤 Nombre del titular:")
-        elif step == 2:
-            data["nombre"] = text
-            data["step"]   = 3
-            await update.message.reply_text("🏦 Número de cuenta:")
-        elif step == 3:
-            digitos = "".join(ch for ch in text if ch.isdigit())
-            if len(digitos) < 8:
-                await update.message.reply_text("❌ Número de cuenta inválido")
-                return
-            data["numero_cuenta"] = digitos
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 4
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 4:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
+async def _gen_nequi_bc(update, data):
+    try:
+        out = generar_comprobante_nequi_bc(data, COMPROBANTE_NEQUI_BC_CONFIG)
+        with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Nequi Corriente")
+        os.remove(out)
+        # ✅ Usa sms_tel si existe
+        sms_data = None
+        if data.get("sms_tel"):
+            sms_data = {"telefono": data["sms_tel"], "valor": data.get("valor", 0)}
+        await send_success_message(update, sms_data=sms_data)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error generando comprobante: {e}")
+    finally:
+        uid = update.effective_user.id
+        if uid in user_data_store: del user_data_store[uid]
 
-    # ── NEQUI CORRIENTE ───────────────────────────────────────────────────
-    elif tipo == "comprobante_nequi_bc":
-        if step == 0:
-            data["nombre"] = text
-            data["step"]   = 1
-            await update.message.reply_text("💰 Valor:")
-        elif step == 1:
-            limpio = limpiar_valor(text)
-            if not limpio.replace("-", "", 1).isdigit():
-                await update.message.reply_text("❌ Ingresa solo números")
-                return
-            v = int(limpio)
-            if v < 1000:
-                await update.message.reply_text("❌ El mínimo es $1,000")
-                return
-            data["valor"] = v
-            data["step"]  = 2
-            await update.message.reply_text("🏦 Número de cuenta (11 dígitos):")
-        elif step == 2:
-            digitos = "".join(ch for ch in text if ch.isdigit())
-            if len(digitos) != 11:
-                await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos")
-                return
-            data["numero_cuenta"] = digitos
-            if referencia_manual_mode.get(user_id):
-                data["step"] = 10
-                await update.message.reply_text("🔢 Ingresa la referencia:")
-                return
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 3
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 3:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 10:
-            data["referencia_manual"] = text
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 11
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 11:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
+async def _gen_nequi_ahorros(update, data):
+    try:
+        out = generar_comprobante_nequi_ahorros(data, COMPROBANTE_NEQUI_AHORROS_CONFIG)
+        with open(out,"rb") as f: await update.message.reply_document(document=f, caption="Nequi Ahorros")
+        os.remove(out)
+        # ✅ Usa sms_tel si existe
+        sms_data = None
+        if data.get("sms_tel"):
+            sms_data = {"telefono": data["sms_tel"], "valor": data.get("valor", 0)}
+        await send_success_message(update, sms_data=sms_data)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error generando comprobante: {e}")
+    finally:
+        uid = update.effective_user.id
+        if uid in user_data_store: del user_data_store[uid]
 
-    # ── NEQUI AHORROS ─────────────────────────────────────────────────────
-    elif tipo == "comprobante_nequi_ahorros":
-        if step == 0:
-            data["nombre"] = text
-            data["step"]   = 1
-            await update.message.reply_text("💰 Valor:")
-        elif step == 1:
-            limpio = limpiar_valor(text)
-            if not limpio.replace("-", "", 1).isdigit():
-                await update.message.reply_text("❌ Ingresa solo números")
-                return
-            v = int(limpio)
-            if v < 1000:
-                await update.message.reply_text("❌ El mínimo es $1,000")
-                return
-            data["valor"] = v
-            data["step"]  = 2
-            await update.message.reply_text("🏦 Número de cuenta (11 dígitos):")
-        elif step == 2:
-            digitos = "".join(ch for ch in text if ch.isdigit())
-            if len(digitos) != 11:
-                await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos")
-                return
-            data["numero_cuenta"] = digitos
-            if referencia_manual_mode.get(user_id):
-                data["step"] = 10
-                await update.message.reply_text("🔢 Ingresa la referencia:")
-                return
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 3
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 3:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 10:
-            data["referencia_manual"] = text
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 11
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 11:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
+async def _gen_nuevo(update, data):
+    try:
+        out = generar_comprobante_nuevo(data, COMPROBANTE_NUEVO_CONFIG)
+        with open(out,"rb") as f: await update.message.reply_document(document=f, caption=" ")
+        os.remove(out)
+        nombre_raw = data.get("nombre") or ""
+        valor_raw  = data.get("valor", 0)
+        try: valor_float = float(valor_raw)
+        except (TypeError, ValueError): valor_float = 0.0
+        dm = {"nombre": enmascarar_nombre(nombre_raw), "valor": -abs(valor_float)}
+        out2 = generar_comprobante(dm, MVKEY_CONFIG)
+        with open(out2,"rb") as f: await update.message.reply_document(document=f, caption=" ")
+        os.remove(out2)
+        await send_success_message(update)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error generando comprobante: {e}")
+    finally:
+        uid = update.effective_user.id
+        if uid in user_data_store: del user_data_store[uid]
 
-    # ── BRE B ─────────────────────────────────────────────────────────────
-    elif tipo == "comprobante_nuevo":
-        if step == 0:
-            data["nombre"] = text
-            data["step"]   = 1
-            await update.message.reply_text("💰 Valor:")
-        elif step == 1:
-            try:
-                limpio = limpiar_valor(text)
-                v = float(limpio)
-                if v < 1000:
-                    await update.message.reply_text("❌ El mínimo es $1,000")
-                    return
-                data["valor"] = v
-            except:
-                await update.message.reply_text("❌ Ingresa solo números")
-                return
-            data["step"] = 2
-            await update.message.reply_text("🔑 Llave (alias/número):")
-        elif step == 2:
-            data["llave"] = text
-            data["step"]  = 3
-            await update.message.reply_text("🏛️ Banco:")
-        elif step == 3:
-            data["banco"] = text
-            data["step"]  = 4
-            await update.message.reply_text("📞 Número de quien envía (10 dígitos, empieza en 3):")
-        elif step == 4:
-            tel, es_valido = validar_telefono(text)
-            if not es_valido:
-                await update.message.reply_text(
-                    "❌ Número inválido. Debe tener 10 dígitos y empezar en 3.\n"
-                    "Ejemplo: 3001234567\n\n"
-                    "/cancelar para reiniciar"
-                )
-                return
-            data["numero_envia"] = tel
-            if referencia_manual_mode.get(user_id):
-                data["step"] = 10
-                await update.message.reply_text("🔢 Ingresa la referencia:")
-                return
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 5
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 5:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 10:
-            data["referencia_manual"] = text
-            if fecha_manual_mode.get(user_id):
-                data["step"] = 11
-                await update.message.reply_text("📅 Ingresa la fecha:")
-                return
-            await mostrar_confirmacion(update, user_id, data, tipo)
-        elif step == 11:
-            data["fecha_manual"] = text
-            await mostrar_confirmacion(update, user_id, data, tipo)
-
-
-# ══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════
 # COMANDOS ADMIN
-# ══════════════════════════════════════════════════════════════════════════
-
+# ═══════════════════════════════════════════════
 async def gratis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not auth_system.is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Solo admins.")
-        return
+    uid = update.effective_user.id
+    if not auth_system.is_admin(uid): await update.message.reply_text("❌ Solo admins."); return
     auth_system.set_gratis_mode(True)
     await update.message.reply_text("✅ Modo GRATIS activado.")
+    await notify_main_admin(context, uid, update.effective_user.first_name, "Activó modo gratis")
 
 async def off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not auth_system.is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Solo admins.")
-        return
+    uid = update.effective_user.id
+    if not auth_system.is_admin(uid): await update.message.reply_text("❌ Solo admins."); return
     auth_system.set_gratis_mode(False)
     await update.message.reply_text("🔴 Modo OFF activado.")
+    await notify_main_admin(context, uid, update.effective_user.first_name, "Desactivó modo gratis")
 
 async def agregar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not auth_system.is_admin(user_id):
-        await update.message.reply_text("❌ Solo admins.")
-        return
-    user_data_store[user_id] = {
-        "step": 0,
-        "tipo": "agregar_usuario",
-        "admin_name": update.effective_user.first_name or "Admin"
-    }
-    actualizar_actividad(user_id)
+    uid = update.effective_user.id
+    if not auth_system.is_admin(uid): await update.message.reply_text("❌ Solo admins."); return
+    user_data_store[uid] = {"step": 0, "tipo": "agregar_usuario", "admin_name": update.effective_user.first_name or "Admin"}
     await update.message.reply_text("👤 Ingresa el ID del usuario:")
 
 async def eliminar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not auth_system.is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Solo admins.")
-        return
-    if not context.args:
-        await update.message.reply_text("Uso: /eliminar <id>")
-        return
+    uid = update.effective_user.id
+    if not auth_system.is_admin(uid): await update.message.reply_text("❌ Solo admins."); return
+    if not context.args: await update.message.reply_text("Uso: /eliminar <id>"); return
     try:
-        tid = int(context.args[0])
-        auth_system.remove_user(tid)
-        eliminar_vencimiento(tid)
+        tid = int(context.args[0]); auth_system.remove_user(tid); eliminar_vencimiento(tid)
         await update.message.reply_text(f"✅ Usuario {tid} eliminado.")
-    except ValueError:
-        await update.message.reply_text("❌ ID inválido.")
+        await notify_main_admin(context, uid, update.effective_user.first_name, "Eliminó usuario", str(tid))
+    except ValueError: await update.message.reply_text("❌ ID inválido.")
 
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not auth_system.is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Solo admins.")
-        return
-    if not context.args:
-        await update.message.reply_text("Uso: /ban <id>")
-        return
+    uid = update.effective_user.id
+    if not auth_system.is_admin(uid): await update.message.reply_text("❌ Solo admins."); return
+    if not context.args: await update.message.reply_text("Uso: /ban <id>"); return
     try:
-        auth_system.ban_user(int(context.args[0]))
-        await update.message.reply_text(f"🚫 {context.args[0]} baneado.")
-    except ValueError:
-        await update.message.reply_text("❌ ID inválido.")
+        tid = int(context.args[0]); auth_system.ban_user(tid)
+        await update.message.reply_text(f"🚫 Usuario {tid} baneado.")
+        await notify_main_admin(context, uid, update.effective_user.first_name, "Baneó usuario", str(tid))
+    except ValueError: await update.message.reply_text("❌ ID inválido.")
 
 async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not auth_system.is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Solo admins.")
-        return
-    if not context.args:
-        await update.message.reply_text("Uso: /unban <id>")
-        return
+    uid = update.effective_user.id
+    if not auth_system.is_admin(uid): await update.message.reply_text("❌ Solo admins."); return
+    if not context.args: await update.message.reply_text("Uso: /unban <id>"); return
     try:
-        auth_system.unban_user(int(context.args[0]))
-        await update.message.reply_text(f"✅ {context.args[0]} desbaneado.")
-    except ValueError:
-        await update.message.reply_text("❌ ID inválido.")
+        tid = int(context.args[0]); auth_system.unban_user(tid)
+        await update.message.reply_text(f"✅ Usuario {tid} desbaneado.")
+    except ValueError: await update.message.reply_text("❌ ID inválido.")
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not auth_system.is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Solo admins.")
-        return
+    uid = update.effective_user.id
+    if not auth_system.is_admin(uid): await update.message.reply_text("❌ Solo admins."); return
     s = auth_system.get_stats()
+    a = cargar_sms_autorizados()
     await update.message.reply_text(
-        f"📊 *Estadísticas*\n\n"
-        f"👥 Autorizados: {s['total_authorized']}\n"
-        f"🚫 Baneados: {s['total_banned']}\n"
-        f"🛡️ Admins: {s['total_admins']}\n"
-        f"🆓 Modo Gratis: {'✅ Sí' if s['gratis_mode'] else '❌ No'}",
-        parse_mode='Markdown'
-    )
+        f"📊 *Estadísticas*\n\n👥 Autorizados: {s['total_authorized']}\n"
+        f"🚫 Baneados: {s['total_banned']}\n🛡️ Admins: {s['total_admins']}\n"
+        f"🆓 Modo gratis: {'Sí' if s['gratis_mode'] else 'No'}\n"
+        f"📲 Autorizados SMS: {len(a)}", parse_mode='Markdown')
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not auth_system.is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Solo admins.")
-        return
-    if not context.args:
-        await update.message.reply_text("Uso: /admin <id>")
-        return
+    uid = update.effective_user.id
+    if not auth_system.is_admin(uid): await update.message.reply_text("❌ Solo admins."); return
+    if not context.args: await update.message.reply_text("Uso: /admin <id>"); return
     try:
-        auth_system.add_admin(int(context.args[0]))
-        await update.message.reply_text(f"✅ {context.args[0]} ahora es admin.")
-    except ValueError:
-        await update.message.reply_text("❌ ID inválido.")
+        tid = int(context.args[0]); auth_system.add_admin(tid)
+        await update.message.reply_text(f"✅ {tid} es admin ahora.")
+    except ValueError: await update.message.reply_text("❌ ID inválido.")
 
 async def unadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not auth_system.is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Solo admins.")
-        return
-    if not context.args:
-        await update.message.reply_text("Uso: /unadmin <id>")
-        return
+    uid = update.effective_user.id
+    if not auth_system.is_admin(uid): await update.message.reply_text("❌ Solo admins."); return
+    if not context.args: await update.message.reply_text("Uso: /unadmin <id>"); return
     try:
-        auth_system.remove_admin(int(context.args[0]))
-        await update.message.reply_text(f"✅ {context.args[0]} ya no es admin.")
-    except ValueError:
-        await update.message.reply_text("❌ ID inválido.")
+        tid = int(context.args[0]); auth_system.remove_admin(tid)
+        await update.message.reply_text(f"✅ {tid} ya no es admin.")
+    except ValueError: await update.message.reply_text("❌ ID inválido.")
 
 async def cancelar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in user_data_store:
-        limpiar_usuario(user_id)
-        await update.message.reply_text("✅ Operación cancelada.", reply_markup=main_keyboard())
+    uid = update.effective_user.id
+    if uid in user_data_store:
+        del user_data_store[uid]
+        await update.message.reply_text("✅ Operación cancelada. Usa /comprobante para iniciar.")
     else:
-        await update.message.reply_text("No tienes operaciones activas. Usa /comprobante.")
+        await update.message.reply_text("No tienes acciones activas. Usa /comprobante para iniciar.")
 
 async def fechas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if auth_system.is_banned(user_id):
-        return
-    if fecha_manual_mode.get(user_id):
-        fecha_manual_mode[user_id] = False
-        await update.message.reply_text("📅 Fecha *Automática* activada.", parse_mode='Markdown')
+    uid = update.effective_user.id
+    if auth_system.is_banned(uid): await update.message.reply_text("Estás baneado."); return
+    if not auth_system.can_use_bot(uid, update.effective_chat.id) and not auth_system.gratis_mode:
+        await update.message.reply_text("⚠️ No tienes acceso."); return
+    if fecha_manual_mode.get(uid):
+        fecha_manual_mode[uid] = False
+        await update.message.reply_text("📅 Modo Fecha *Automática* activado.", parse_mode='Markdown')
     else:
-        fecha_manual_mode[user_id] = True
-        await update.message.reply_text("📅 Fecha *Manual* activada.", parse_mode='Markdown')
+        fecha_manual_mode[uid] = True
+        await update.message.reply_text("📅 Modo Fecha *Manual* activado.\n\nCuando se pida la fecha, escríbela así:\n`28/02/2026 10:30 AM`", parse_mode='Markdown')
 
 async def refes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if auth_system.is_banned(user_id):
-        return
-    if referencia_manual_mode.get(user_id):
-        referencia_manual_mode[user_id] = False
-        await update.message.reply_text("🔢 Referencia *Automática* activada.", parse_mode='Markdown')
+    uid = update.effective_user.id
+    if auth_system.is_banned(uid): await update.message.reply_text("Estás baneado."); return
+    if not auth_system.can_use_bot(uid, update.effective_chat.id) and not auth_system.gratis_mode:
+        await update.message.reply_text("⚠️ No tienes acceso."); return
+    if referencia_manual_mode.get(uid):
+        referencia_manual_mode[uid] = False
+        await update.message.reply_text("🔢 Modo Referencia *Automática* activado.", parse_mode='Markdown')
     else:
-        referencia_manual_mode[user_id] = True
-        await update.message.reply_text("🔢 Referencia *Manual* activada.", parse_mode='Markdown')
+        referencia_manual_mode[uid] = True
+        await update.message.reply_text("🔢 Modo Referencia *Manual* activado.\n\nCuando se pida la referencia, escríbela así:\n`M12345678`", parse_mode='Markdown')
 
 async def precios_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "💵 *PRECIOS*\n\n"
-        "• 1 Mes:   $25,000\n"
-        "• 2 Meses: $45,000\n"
-        "• 3 Meses: $55,000\n\n"
-        "📞 Contacta al admin:",
-        parse_mode='Markdown',
-        reply_markup=admin_keyboard()
-    )
+        "💵 *LISTA DE PRECIOS*\n\n• 1 Mes: $25,000\n• 2 Meses: $45,000\n• 3 Meses: $55,000\n\n"
+        "🔑 *Llave Bre B:* `@DLJMM82607`\n\nContacta a un admin:", parse_mode='Markdown', reply_markup=admin_keyboard())
 
 async def horarios_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🕰️ *HORARIOS GRATIS*\n\n"
-        "🌅 9:00 AM - 11:00 AM\n"
-        "🌞 12:00 PM - 3:00 PM\n\n"
-        "👑 VIP: 24/7\n\n"
-        "💎 /precios para planes premium",
-        parse_mode='Markdown'
-    )
+        "🕰️ *HORARIOS GRATIS*\n\n🌅 9:00 AM - 11:00 AM\n🌞 12:00 PM - 3:00 PM\n\n"
+        "👑 VIP: Acceso 24/7\n\n💎 Usa /precios para ser VIP", parse_mode='Markdown')
 
+async def verificar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    try:
+        m = await context.bot.get_chat_member(chat_id=REQUIRED_GROUP_ID, user_id=uid)
+        ok = m.status in ['member','administrator','creator','restricted']
+        sms = get_sms_restantes(uid)
+        aut = sms_autorizado(uid)
+        await update.message.reply_text(
+            f"{'✅' if ok else '❌'} Estado: *{m.status.upper()}*\n🆔 Tu ID: `{uid}`\n"
+            f"📲 SMS disponibles: *{sms}*\n🔑 Autorizado SMS: *{'✅ Sí' if aut else '❌ No'}*",
+            parse_mode='Markdown')
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}", reply_markup=admin_keyboard())
+
+# ═══════════════════════════════════════════════
+# PANEL ADM 1
+# ═══════════════════════════════════════════════
 async def panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not auth_system.is_main_admin(user_id):
-        await update.message.reply_text("⛔ Solo el ADM principal.")
-        return
+    uid = update.effective_user.id
+    if not auth_system.is_main_admin(uid):
+        await update.message.reply_text("⛔ Solo el ADM 1 puede usar este panel."); return
     s = auth_system.get_stats()
-    texto = (
-        f"👑 *PANEL ADMINISTRADOR*\n"
-        f"━━━━━━━━━━━━━━━━━\n\n"
-        f"📊 Modo: {'🟢 GRATIS' if s['gratis_mode'] else '🔴 OFF'}\n"
-        f"👥 Autorizados: {s['total_authorized']}\n"
-        f"🚫 Baneados: {s['total_banned']}\n"
-        f"🛡️ Admins: {s['total_admins']}\n\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"⚙️ *COMANDOS:*\n\n"
-        f"🆓 /gratis  |  🔒 /off\n"
-        f"➕ /agregar  |  ➖ /eliminar [ID]\n"
-        f"🚫 /ban [ID]  |  ✅ /unban [ID]\n"
-        f"🛡️ /admin [ID]  |  ❌ /unadmin [ID]\n"
-        f"📊 /stats\n"
-        f"━━━━━━━━━━━━━━━━━"
-    )
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🟢 GRATIS", callback_data="panel_gratis"),
-         InlineKeyboardButton("🔴 OFF",    callback_data="panel_off")],
-        [InlineKeyboardButton("📊 Stats",  callback_data="panel_stats")]
-    ])
-    await update.message.reply_text(texto, parse_mode='Markdown', reply_markup=kb)
-
+    modo = "🟢 GRATIS" if s['gratis_mode'] else "🔴 OFF"
+    a = cargar_sms_autorizados()
+    await update.message.reply_text(
+        f"👑 *PANEL ADM 1*\n━━━━━━━━━━━━━━━━━\n\n📊 Modo: {modo}\n"
+        f"👥 Autorizados: {s['total_authorized']}\n🚫 Baneados: {s['total_banned']}\n"
+        f"🛡️ Admins: {s['total_admins']}\n📲 Autorizados SMS: {len(a)}\n\n"
+        "━━━━━━━━━━━━━━━━━\n⚙️ *COMANDOS:*\n\n"
+        "🆓 /gratis — Abrir para todos\n🔒 /off — Solo autorizados\n"
+        "➕ /agregar — Autorizar usuario\n➖ /eliminar [ID] — Quitar\n"
+        "🚫 /ban [ID] — Banear\n✅ /unban [ID] — Desbanear\n"
+        "🛡️ /admin [ID] — Dar admin\n❌ /unadmin [ID] — Quitar admin\n"
+        "📊 /stats — Estadísticas\n📲 /smss [ID] [cant] — Recargar SMS\n"
+        "✅ /autorizarsms [ID] — Autorizar SMS\n❌ /desautorizarsms [ID] — Quitar autorización\n"
+        "📲 /panelsms — Panel SMS\n━━━━━━━━━━━━━━━━━",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🟢 GRATIS", callback_data="panel_gratis"),
+             InlineKeyboardButton("🔴 OFF", callback_data="panel_off")],
+            [InlineKeyboardButton("📊 Stats", callback_data="panel_stats")]]))
 
 async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not auth_system.is_main_admin(query.from_user.id):
-        await query.answer("⛔ Sin permisos.", show_alert=True)
-        return
-    await query.answer()
-    if query.data == "panel_gratis":
-        auth_system.set_gratis_mode(True)
-        await query.edit_message_text("✅ Modo GRATIS activado.")
-    elif query.data == "panel_off":
-        auth_system.set_gratis_mode(False)
-        await query.edit_message_text("🔒 Modo OFF activado.")
-    elif query.data == "panel_stats":
+    q = update.callback_query; uid = q.from_user.id
+    if not auth_system.is_main_admin(uid):
+        await q.answer("⛔ Sin permisos.", show_alert=True); return
+    await q.answer()
+    if q.data == "panel_gratis":
+        auth_system.set_gratis_mode(True); await q.edit_message_text("✅ Modo GRATIS activado.")
+    elif q.data == "panel_off":
+        auth_system.set_gratis_mode(False); await q.edit_message_text("🔴 Modo OFF activado.")
+    elif q.data == "panel_stats":
         s = auth_system.get_stats()
-        await query.edit_message_text(
-            f"📊 *Estadísticas*\n"
-            f"Modo: {'🟢 Gratis' if s['gratis_mode'] else '🔴 OFF'}\n"
-            f"Autorizados: {s['total_authorized']}\n"
-            f"Baneados: {s['total_banned']}",
-            parse_mode='Markdown'
-        )
+        a = cargar_sms_autorizados()
+        await q.edit_message_text(
+            f"📊 *Stats*\nModo: {'🟢' if s['gratis_mode'] else '🔴'}\n"
+            f"Autorizados: {s['total_authorized']}\nBaneados: {s['total_banned']}\n"
+            f"Autorizados SMS: {len(a)}",
+            parse_mode='Markdown')
 
-async def apk_precios_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text(
-        "💵 *PRECIOS*\n\n"
-        "• 1 Mes:   $25,000\n"
-        "• 2 Meses: $45,000\n"
-        "• 3 Meses: $55,000\n\n"
-        "📞 Contacta:",
-        parse_mode='Markdown',
-        reply_markup=admin_keyboard()
-    )
-
+# ═══════════════════════════════════════════════
+# REFERENCIAS
+# ═══════════════════════════════════════════════
 async def refe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not auth_system.is_admin(user_id):
-        await update.message.reply_text("❌ Solo admins.")
-        return
+    uid = update.effective_user.id
+    if not auth_system.is_admin(uid): await update.message.reply_text("❌ Solo admins."); return
     if not update.message.reply_to_message or not update.message.reply_to_message.photo:
-        await update.message.reply_text("❌ Responde a una foto con /refe.")
-        return
+        await update.message.reply_text("❌ Responde a una foto con /refe."); return
     try:
-        photo      = update.message.reply_to_message.photo[-1]
-        referencias = cargar_referencias()
-        nueva = {
-            "file_id":      photo.file_id,
-            "guardado_por": update.effective_user.first_name or "Admin",
-            "user_id":      user_id,
-            "fecha":        datetime.now(pytz.timezone("America/Bogota")).strftime("%d/%m/%Y %H:%M:%S"),
-            "numero":       len(referencias) + 1
-        }
-        referencias.append(nueva)
-        guardar_referencias(referencias)
+        photo = update.message.reply_to_message.photo[-1]
+        refs  = cargar_referencias()
+        nueva = {"file_id": photo.file_id, "guardado_por": update.effective_user.first_name or "Admin",
+                 "user_id": uid, "fecha": datetime.now(pytz.timezone("America/Bogota")).strftime("%d/%m/%Y %H:%M:%S"),
+                 "numero": len(refs) + 1}
+        refs.append(nueva); guardar_referencias(refs)
         await update.message.reply_text(f"✅ Referencia #{nueva['numero']} guardada.")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
 async def referencias_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not auth_system.is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Solo admins.")
-        return
-    referencias = cargar_referencias()
-    if not referencias:
-        await update.message.reply_text("📭 No hay referencias guardadas.")
-        return
-    await enviar_referencias_paginadas(update, context, referencias, 0)
+        await update.message.reply_text("❌ Solo admins."); return
+    refs = cargar_referencias()
+    if not refs: await update.message.reply_text("📭 No hay referencias."); return
+    await enviar_referencias_paginadas(update, context, refs, 0)
 
-async def enviar_referencias_paginadas(update_or_query, context, referencias, offset):
+async def enviar_referencias_paginadas(update_or_query, context, refs, offset):
     if hasattr(update_or_query, 'callback_query') and update_or_query.callback_query:
         chat_id = update_or_query.callback_query.message.chat_id
     else:
         chat_id = update_or_query.effective_chat.id
-    total       = len(referencias)
-    fin         = min(offset + 5, total)
-    message_ids = []
-    for ref in referencias[offset:fin]:
+    total = len(refs); fin = min(offset + 5, total); msg_ids = []
+    for ref in refs[offset:fin]:
         caption = f"📸 *#{ref['numero']}* — {ref['guardado_por']} — {ref['fecha']}"
         try:
-            file      = await context.bot.get_file(ref['file_id'])
-            file_path = await file.download_to_drive()
-            with open(file_path, 'rb') as pf:
-                msg = await context.bot.send_document(
-                    chat_id=chat_id, document=pf,
-                    caption=caption, parse_mode='Markdown',
-                    filename=f"ref_{ref['numero']}.jpg"
-                )
-            message_ids.append(msg.message_id)
-            try: os.remove(file_path)
+            file = await context.bot.get_file(ref['file_id'])
+            fp   = await file.download_to_drive()
+            with open(fp,'rb') as f:
+                m = await context.bot.send_document(chat_id=chat_id, document=f, caption=caption,
+                                                     parse_mode='Markdown', filename=f"ref_{ref['numero']}.jpg")
+            msg_ids.append(m.message_id)
+            try: os.remove(fp)
             except: pass
         except Exception as e:
-            msg = await context.bot.send_message(chat_id=chat_id, text=f"❌ Error ref #{ref['numero']}: {e}")
-            message_ids.append(msg.message_id)
+            m = await context.bot.send_message(chat_id=chat_id, text=f"❌ Error ref #{ref['numero']}: {e}")
+            msg_ids.append(m.message_id)
     if fin < total:
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                f"📥 Ver más ({fin+1}-{min(fin+5, total)} de {total})",
-                callback_data=f"ref_next_{fin}_{','.join(map(str, message_ids))}"
-            )
-        ]])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+            f"📥 Ver más ({fin+1}-{min(fin+5,total)} de {total})",
+            callback_data=f"ref_next_{fin}_{','.join(map(str,msg_ids))}")]])
         await context.bot.send_message(chat_id=chat_id, text="👇 Más referencias:", reply_markup=kb)
     else:
-        await context.bot.send_message(chat_id=chat_id, text="✅ Todas las referencias mostradas.")
+        await context.bot.send_message(chat_id=chat_id, text="✅ Todas las referencias enviadas.")
 
 async def referencias_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    parts  = query.data.split('_')
-    offset = int(parts[2])
+    q = update.callback_query; await q.answer()
+    parts  = q.data.split('_'); offset = int(parts[2])
     for mid in [int(x) for x in parts[3].split(',')]:
-        try: await context.bot.delete_message(chat_id=query.message.chat_id, message_id=mid)
+        try: await context.bot.delete_message(chat_id=q.message.chat_id, message_id=mid)
         except: pass
-    try: await query.message.delete()
+    try: await q.message.delete()
     except: pass
     await enviar_referencias_paginadas(update, context, cargar_referencias(), offset)
 
+# ═══════════════════════════════════════════════
+# BRQR
+# ═══════════════════════════════════════════════
+async def brqr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id; cid = update.effective_chat.id
+    if auth_system.is_banned(uid):
+        await update.message.reply_text("Estás baneado. Contacta al administrador."); return
+    if not auth_system.gratis_mode and not auth_system.can_use_bot(uid, cid):
+        await update.message.reply_text("🔴 *Bot en Modo OFF*\n\n⭐ Solo usuarios *VIP* pueden usar este comando.",
+            parse_mode="Markdown", reply_markup=admin_keyboard()); return
+    if not await is_member_of_group(context.bot, uid):
+        await update.message.reply_text("⚠️ Debes unirte al grupo oficial para usar el bot.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📲 Unirse", url="https://t.me/nequixxx")]])); return
+    await update.message.reply_text("🔲 *Generador Comprobante QR*\n\n¿Cómo quieres ingresar el nombre del negocio?",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📷 Escanear QR", callback_data="brqr_scan"),
+            InlineKeyboardButton("✏️ Ingresar Manual", callback_data="brqr_manual")]]))
 
-# ══════════════════════════════════════════════════════════════════════════
-# MAIN — con manejo robusto del error Conflict
-# ══════════════════════════════════════════════════════════════════════════
+async def brqr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; uid = q.from_user.id; cid = q.message.chat_id
+    await q.answer()
+    if not auth_system.gratis_mode and not auth_system.can_use_bot(uid, cid):
+        await q.message.reply_text("⛔ Sin acceso.", reply_markup=admin_keyboard()); return
+    if q.data == "brqr_scan":
+        user_data_store[uid] = {"step": "brqr_esperando_foto", "tipo": "comprobante_qr"}
+        await q.edit_message_text("📷 *Modo Escaneo QR*\n\nEnvía una foto clara del código QR del negocio.", parse_mode="Markdown")
+    elif q.data == "brqr_manual":
+        user_data_store[uid] = {"step": "brqr_nombre_manual", "tipo": "comprobante_qr"}
+        await q.edit_message_text("✏️ *Modo Manual*\n\nEscribe el nombre del negocio o propietario:", parse_mode="Markdown")
 
+# ═══════════════════════════════════════════════
+# CALLBACKS VARIOS
+# ═══════════════════════════════════════════════
+async def apk_precios_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.message.reply_text(
+        "📱 *PRECIOS OFICIALES*\n\n• 20.000 COP → 5.000.000 saldo\n• 35.000 COP → 8.000.000 saldo\n"
+        "• 45.000 COP → 10.000.000 saldo\n• 55.000 COP → 15.000.000 saldo\n"
+        "• 70.000 COP → 25.000.000 saldo\n• 85.000 COP → 35.000.000 saldo\n"
+        "• 100.000 COP → 50.000.000 saldo\n\n📞 Contacta para adquirir:",
+        parse_mode='Markdown', reply_markup=admin_keyboard())
+
+# ═══════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════
 def main():
-    import time
-    from telegram.request import HTTPXRequest
+    if not acquire_instance_lock():
+        print("❌ Ya hay una instancia corriendo. Cerrando."); sys.exit(1)
+    import atexit; atexit.register(release_instance_lock)
 
-    request = HTTPXRequest(
-        connection_pool_size=8,
-        read_timeout=60,
-        write_timeout=60,
-        connect_timeout=30,
-        pool_timeout=30
-    )
+    token = os.environ.get("BOT_TOKEN", "8528554047:AAFrzcGHxC0xpI78ku63dZesK9wTfK632mc").strip()
+    if not token:
+        raise ValueError("❌ BOT_TOKEN no está definido en las variables de entorno.")
 
-    app = Application.builder().token(BOT_TOKEN).request(request).build()
+    app = Application.builder().token(token).build()
+    app.job_queue.run_repeating(verificar_vencimientos, interval=43200, first=60)
 
-    # Jobs periódicos
-    app.job_queue.run_repeating(verificar_vencimientos,       interval=43200, first=60)
-    # FIX: Job de limpieza de sesiones colgadas cada 2 minutos
-    app.job_queue.run_repeating(limpiar_sesiones_colgadas,    interval=120,   first=30)
+    app.add_handler(CommandHandler("comprobante",      start))
+    app.add_handler(CommandHandler("start",            start_redirect))
+    app.add_handler(CommandHandler("fechas",           fechas_command))
+    app.add_handler(CommandHandler("refes",            refes_command))
+    app.add_handler(CommandHandler("precios",          precios_command))
+    app.add_handler(CommandHandler("horarios",         horarios_command))
+    app.add_handler(CommandHandler("gratis",           gratis_command))
+    app.add_handler(CommandHandler("off",              off_command))
+    app.add_handler(CommandHandler("agregar",          agregar_command))
+    app.add_handler(CommandHandler("eliminar",         eliminar_command))
+    app.add_handler(CommandHandler("stats",            stats_command))
+    app.add_handler(CommandHandler("ban",              ban_command))
+    app.add_handler(CommandHandler("unban",            unban_command))
+    app.add_handler(CommandHandler("cancelar",         cancelar_command))
+    app.add_handler(CommandHandler("verificar",        verificar_command))
+    app.add_handler(CommandHandler("refe",             refe_command))
+    app.add_handler(CommandHandler("referencias",      referencias_command))
+    app.add_handler(CommandHandler("admin",            admin_command))
+    app.add_handler(CommandHandler("unadmin",          unadmin_command))
+    app.add_handler(CommandHandler("panel",            panel_command))
+    app.add_handler(CommandHandler("brqr",             brqr_command))
+    app.add_handler(CallbackQueryHandler(apk_precios_callback,  pattern="^apk_precios$"))
+    app.add_handler(CallbackQueryHandler(referencias_callback,  pattern="^ref_next_"))
+    app.add_handler(CallbackQueryHandler(panel_callback,        pattern="^panel_"))
+    app.add_handler(CallbackQueryHandler(brqr_callback,         pattern="^brqr_"))
 
-    # Comandos
-    app.add_handler(CommandHandler("comprobante",  start))
-    app.add_handler(CommandHandler("start",        start_redirect))
-    app.add_handler(CommandHandler("fechas",       fechas_command))
-    app.add_handler(CommandHandler("refes",        refes_command))
-    app.add_handler(CommandHandler("precios",      precios_command))
-    app.add_handler(CommandHandler("horarios",     horarios_command))
-    app.add_handler(CommandHandler("gratis",       gratis_command))
-    app.add_handler(CommandHandler("off",          off_command))
-    app.add_handler(CommandHandler("agregar",      agregar_command))
-    app.add_handler(CommandHandler("eliminar",     eliminar_command))
-    app.add_handler(CommandHandler("stats",        stats_command))
-    app.add_handler(CommandHandler("ban",          ban_command))
-    app.add_handler(CommandHandler("unban",        unban_command))
-    app.add_handler(CommandHandler("cancelar",     cancelar_command))
-    app.add_handler(CommandHandler("refe",         refe_command))
-    app.add_handler(CommandHandler("referencias",  referencias_command))
-    app.add_handler(CommandHandler("admin",        admin_command))
-    app.add_handler(CommandHandler("unadmin",      unadmin_command))
-    app.add_handler(CommandHandler("panel",        panel_command))
-
-    # Callbacks
-    app.add_handler(CallbackQueryHandler(confirmar_generacion_callback, pattern="^gen_(ok|no)_"))
-    app.add_handler(CallbackQueryHandler(apk_precios_callback,          pattern="^apk_precios$"))
-    app.add_handler(CallbackQueryHandler(referencias_callback,          pattern="^ref_next_"))
-    app.add_handler(CallbackQueryHandler(panel_callback,                pattern="^panel_"))
-
-    # Mensajes
-    app.add_handler(MessageHandler(filters.PHOTO,                   handle_photo))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🤖 Bot iniciado correctamente.")
-
-    MAX_REINTENTOS = 5
-    reintentos     = 0
-
-    while True:
-        try:
-            app.run_polling(
-                drop_pending_updates=True,
-                allowed_updates=["message", "callback_query"]
-            )
-            break
-        except Exception as e:
-            error_str = str(e)
-            if "Conflict" in error_str:
-                reintentos += 1
-                espera = min(30, 5 * reintentos)
-                logging.warning(
-                    f"⚠️ Conflict detectado (intento {reintentos}/{MAX_REINTENTOS}). "
-                    f"Esperando {espera}s..."
-                )
-                time.sleep(espera)
-                if reintentos >= MAX_REINTENTOS:
-                    logging.error("❌ Demasiados Conflicts. Abortando.")
-                    sys.exit(1)
-            else:
-                logging.error(f"❌ Error inesperado: {e}. Reiniciando en 10s...")
-                time.sleep(10)
-
+    logging.info("🤖 Bot iniciado correctamente.")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
