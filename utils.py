@@ -4,6 +4,16 @@ import pytz
 import random
 import uuid
 import locale
+import os
+
+# ── Raíz del proyecto basada en la ubicación de este archivo ──
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def ruta(path):
+    """Convierte una ruta relativa en absoluta desde la raíz del proyecto."""
+    if os.path.isabs(path):
+        return path
+    return os.path.join(BASE_DIR, path)
 
 try:
     locale.setlocale(locale.LC_TIME, 'es_ES.UTF-8')
@@ -32,8 +42,8 @@ def dibujar_valor_movimiento(draw, base_style, valor, font_path, ancho_imagen, d
     size_entero = base_style["size"]
     size_decimal = int(size_entero * 0.75)
 
-    font_entero = ImageFont.truetype(base_style.get("font", font_path), size_entero)
-    font_decimal = ImageFont.truetype(decimal_style.get("font", font_path) if decimal_style else font_path, size_decimal)
+    font_entero = ImageFont.truetype(ruta(base_style.get("font", font_path)), size_entero)
+    font_decimal = ImageFont.truetype(ruta(decimal_style.get("font", font_path) if decimal_style else font_path), size_decimal)
 
     ancho_entero = draw.textlength(entero, font=font_entero)
     ancho_decimal = draw.textlength(decimal, font=font_decimal)
@@ -41,8 +51,8 @@ def dibujar_valor_movimiento(draw, base_style, valor, font_path, ancho_imagen, d
     while (ancho_entero + ancho_decimal) > (limite_derecho - limite_izquierdo - margen_derecho) and size_entero > 8:
         size_entero -= 1
         size_decimal = int(size_entero * 0.75)
-        font_entero = ImageFont.truetype(base_style.get("font", font_path), size_entero)
-        font_decimal = ImageFont.truetype(decimal_style.get("font", font_path) if decimal_style else font_path, size_decimal)
+        font_entero = ImageFont.truetype(ruta(base_style.get("font", font_path)), size_entero)
+        font_decimal = ImageFont.truetype(ruta(decimal_style.get("font", font_path) if decimal_style else font_path), size_decimal)
         ancho_entero = draw.textlength(entero, font=font_entero)
         ancho_decimal = draw.textlength(decimal, font=font_decimal)
 
@@ -92,23 +102,22 @@ def enmascarar_nombre(nombre: str) -> str:
 
 
 def generar_comprobante(data, config):
-    template_path = config["template"]
+    template_path = ruta(config["template"])
     output_path = f"gen_{uuid.uuid4().hex}.png"
     styles = config["styles"]
-    font_path = config["font"]
+    font_path = ruta(config["font"])
 
     image = Image.open(template_path).convert("RGB")
     draw = ImageDraw.Draw(image)
 
     tipo_movimiento = "valor1" in styles and "nombre" in styles and "valor_decimal" in styles
-    # ── CORRECCIÓN: usar .get() para evitar KeyError si no existe "output" ──
     es_comprobante_qr = config.get("output", "") == "comprobante_qr_generado.png"
     es_comprobante4 = config.get("output", "") == "comprobante4_generado.png"
 
     if tipo_movimiento:
         decimal_style = styles.get("valor_decimal")
         dibujar_valor_movimiento(draw, styles["valor1"], data["valor"], font_path, image.width, decimal_style)
-        font_nombre = ImageFont.truetype(styles["nombre"].get("font", font_path), styles["nombre"]["size"])
+        font_nombre = ImageFont.truetype(ruta(styles["nombre"].get("font", font_path)), styles["nombre"]["size"])
         draw_text_with_outline(draw, styles["nombre"]["pos"], data["nombre"], font_nombre, styles["nombre"]["color"], "white", 2)
     else:
         if "fecha_manual" in data and data["fecha_manual"]:
@@ -166,10 +175,10 @@ def generar_comprobante(data, config):
 
 
 def generar_comprobante_nuevo(data, config):
-    template_path = config["template"]
+    template_path = ruta(config["template"])
     output_path = f"gen_{uuid.uuid4().hex}.png"
     styles = config["styles"]
-    font_path = config["font"]
+    font_path = ruta(config["font"])
 
     image = Image.open(template_path).convert("RGB")
     draw = ImageDraw.Draw(image)
@@ -296,10 +305,10 @@ def generar_fecha_bc_qr() -> str:
 
 
 def generar_comprobante_ahorros(data, config):
-    template_path = config["template"]
+    template_path = ruta(config["template"])
     output_path = f"gen_{uuid.uuid4().hex}.png"
     styles = config["styles"]
-    font_path = config["font"]
+    font_path = ruta(config["font"])
 
     image = Image.open(template_path).convert("RGB")
     draw = ImageDraw.Draw(image)
@@ -323,7 +332,7 @@ def generar_comprobante_ahorros(data, config):
     for campo, texto in datos.items():
         if campo in styles:
             style = styles[campo]
-            fuente_campo = style.get("font", font_path)
+            fuente_campo = ruta(style.get("font", font_path))
             font = ImageFont.truetype(fuente_campo, style["size"])
             draw.text(style["pos"], str(texto), font=font, fill=style["color"])
 
@@ -332,10 +341,10 @@ def generar_comprobante_ahorros(data, config):
 
 
 def generar_comprobante_daviplata(data, config):
-    template_path = config["template"]
+    template_path = ruta(config["template"])
     output_path = f"gen_{uuid.uuid4().hex}.png"
     styles = config["styles"]
-    font_path = config["font"]
+    font_path = ruta(config["font"])
 
     image = Image.open(template_path).convert("RGB")
     draw = ImageDraw.Draw(image)
@@ -361,7 +370,7 @@ def generar_comprobante_daviplata(data, config):
     for campo, texto in datos.items():
         if campo in styles:
             style = styles[campo]
-            fuente_campo = style.get("font", font_path)
+            fuente_campo = ruta(style.get("font", font_path))
             font = ImageFont.truetype(fuente_campo, style["size"])
             draw.text(style["pos"], str(texto), font=font, fill=style["color"])
 
@@ -370,10 +379,10 @@ def generar_comprobante_daviplata(data, config):
 
 
 def generar_comprobante_bc_nq_t(data, config):
-    template_path = config["template"]
+    template_path = ruta(config["template"])
     output_path = f"gen_{uuid.uuid4().hex}.png"
     styles = config["styles"]
-    font_path = config["font"]
+    font_path = ruta(config["font"])
 
     image = Image.open(template_path).convert("RGB")
     draw = ImageDraw.Draw(image)
@@ -395,7 +404,7 @@ def generar_comprobante_bc_nq_t(data, config):
     for campo, texto in datos.items():
         if campo in styles:
             style = styles[campo]
-            fuente_campo = style.get("font", font_path)
+            fuente_campo = ruta(style.get("font", font_path))
             font = ImageFont.truetype(fuente_campo, style["size"])
             draw.text(style["pos"], str(texto), font=font, fill=style["color"])
 
@@ -404,11 +413,10 @@ def generar_comprobante_bc_nq_t(data, config):
 
 
 def generar_comprobante_bc_qr(data, config):
-    template_path = config["template"]
+    template_path = ruta(config["template"])
     output_path = f"gen_{uuid.uuid4().hex}.png"
     styles = config["styles"]
-    # ── CORRECCIÓN: font_path global del config como fallback ──
-    font_path = config.get("font", "")
+    font_path = ruta(config.get("font", ""))
 
     image = Image.open(template_path).convert("RGB")
     draw = ImageDraw.Draw(image)
@@ -446,10 +454,9 @@ def generar_comprobante_bc_qr(data, config):
     for campo, texto in datos.items():
         if campo in styles:
             style = styles[campo]
-            # ── CORRECCIÓN: si el style no tiene "font", usa font_path del config ──
-            fuente_campo = style.get("font") or font_path
+            fuente_campo = ruta(style.get("font") or font_path)
             if not fuente_campo:
-                raise ValueError(f"No se encontró fuente para el campo '{campo}'. Verifica COMPROBANTE_BC_QR_CONFIG.")
+                raise ValueError(f"No se encontró fuente para el campo '{campo}'.")
             font = ImageFont.truetype(fuente_campo, style["size"])
             draw.text(style["pos"], str(texto), font=font, fill=style["color"])
 
@@ -458,10 +465,10 @@ def generar_comprobante_bc_qr(data, config):
 
 
 def generar_comprobante_nequi_bc(data, config):
-    template_path = config["template"]
+    template_path = ruta(config["template"])
     output_path = f"gen_{uuid.uuid4().hex}.png"
     styles = config["styles"]
-    font_path = config["font"]
+    font_path = ruta(config["font"])
 
     image = Image.open(template_path).convert("RGB")
     draw = ImageDraw.Draw(image)
@@ -514,10 +521,10 @@ def generar_comprobante_nequi_ahorros(data, config):
 
 
 def generar_movimiento_bancolombia(data, config):
-    template_path = config["template"]
+    template_path = ruta(config["template"])
     output_path = f"gen_{uuid.uuid4().hex}.png"
     styles = config["styles"]
-    font_path = config["font"]
+    font_path = ruta(config["font"])
 
     image = Image.open(template_path).convert("RGB")
     draw = ImageDraw.Draw(image)
@@ -544,7 +551,7 @@ def generar_movimiento_bancolombia(data, config):
     for campo, texto in datos.items():
         if campo in styles:
             style = styles[campo]
-            fuente_campo = style.get("font", font_path)
+            fuente_campo = ruta(style.get("font", font_path))
             font = ImageFont.truetype(fuente_campo, style["size"])
             draw.text(style["pos"], str(texto), font=font, fill=style["color"])
 
