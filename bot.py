@@ -423,41 +423,11 @@ async def send_success_message(update: Update, sms_data: dict = None):
     user_id = update.effective_user.id
     nombre  = update.effective_user.first_name or "Usuario"
 
-    if sms_data:
-        tel = sms_data.get("telefono")
-        val = sms_data.get("valor")
-        if tel and val is not None:
-            if not sms_autorizado(user_id):
-                # Usuario no autorizado para SMS
-                await update.message.reply_text(SMS_NO_AUTORIZADO, parse_mode='Markdown',
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔑 ADM 2", url="tg://user?id=7422843477")]]))
-            elif auth_system.is_admin(user_id):
-                # Admin: SMS ilimitado
-                if enviar_sms_twilio(tel, val):
-                    await update.message.reply_text("📲 *SMS enviado al destinatario.* ✅", parse_mode='Markdown')
-                else:
-                    await update.message.reply_text("⚠️ No se pudo enviar el SMS (error Twilio).")
-            elif puede_enviar_sms(user_id):
-                if enviar_sms_twilio(tel, val):
-                    restantes = consumir_sms(user_id)
-                    await update.message.reply_text(
-                        f"📲 *SMS enviado al destinatario.* ✅\n💳 Te quedan *{restantes}* SMS.",
-                        parse_mode='Markdown')
-                else:
-                    await update.message.reply_text("⚠️ No se pudo enviar el SMS (error Twilio).")
-            else:
-                await update.message.reply_text(SMS_SIN_CREDITOS, parse_mode='Markdown',
-                    reply_markup=sms_anuncio_kb())
-
     await update.message.reply_text(
         f"✅ <b>Comprobante generado con éxito</b>\n\n"
         f"👤 <b>{nombre}</b>, usa /comprobante para generar otro\n\n"
         f"🙏 <b>Gracias por utilizar nuestros servicios</b>",
         parse_mode='HTML')
-
-    if auth_system.gratis_mode and not auth_system.is_admin(user_id):
-        await update.message.reply_text(SMS_ANUNCIO, parse_mode='Markdown', reply_markup=sms_anuncio_kb())
 
 # ═══════════════════════════════════════════════
 # HELPER: parsers
@@ -798,7 +768,7 @@ STEP_HINTS = {
     2:                    "💰 Ingresa el *valor* a transferir (solo números, ej: 50000):",
     3:                    "📅 Ingresa la *fecha* (ej: 28/02/2026 10:30 AM):",
     10:                   "🔢 Ingresa la *referencia* (ej: M12345678):",
-    20:                   "📱 Ingresa el *número para SMS* (10 dígitos) o escribe `omitir`:",
+    20:                   "💰 Ingresa el *valor* a transferir (solo números, ej: 50000):",
     "brqr_nombre_manual": "✏️ Escribe el *nombre del negocio*:",
     "brqr_monto":         "💰 Ingresa el *monto* (solo números, ej: 50000):",
     "qr_monto":           "💰 Ingresa el *monto* (solo números, ej: 50000):",
@@ -904,8 +874,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not tipo:
         del user_data_store[user_id]; return
 
-    # Si ya está generando, ignorar mensajes extra
+    # Si ya está generando, limpiar estado y dejar continuar
     if step == "generando":
+        del user_data_store[user_id]
+        await update.message.reply_text("⚠️ Operación anterior interrumpida. Usa /comprobante para iniciar.")
         return
 
     # ─────────────────────────────────────────
@@ -1046,28 +1018,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except: await update.message.reply_text("❌ Valor inválido. Solo números."); return
             if v < 1000: await update.message.reply_text("❌ Mínimo $1,000"); return
             data["valor"] = v
-            # ✅ Pedir teléfono para SMS
-            if sms_autorizado(user_id):
-                data["step"] = 20
-                await update.message.reply_text(
-                    "📱 ¿A qué número enviar el *SMS de notificación*?\n"
-                    "(10 dígitos, empieza en 3)\n\n"
-                    "_Escribe_ `omitir` _si no deseas enviar SMS_",
-                    parse_mode="Markdown")
-            else:
-                if fecha_manual_mode.get(user_id):
-                    data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
-                await _gen_ahorros(update, data, COMPROBANTE_AHORROS_CONFIG, "Ahorros")
-        elif step == 20:  # ✅ SMS teléfono
-            if text.lower() == "omitir":
-                data["sms_tel"] = None
-            else:
-                tel = parse_tel(text)
-                if not tel:
-                    await update.message.reply_text(
-                        "❌ Número inválido. 10 dígitos, empieza en 3.\n"
-                        "O escribe `omitir` para saltar.", parse_mode="Markdown"); return
-                data["sms_tel"] = tel
             if fecha_manual_mode.get(user_id):
                 data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
             await _gen_ahorros(update, data, COMPROBANTE_AHORROS_CONFIG, "Ahorros")
@@ -1096,28 +1046,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except: await update.message.reply_text("❌ Valor inválido. Solo números."); return
             if v < 1000: await update.message.reply_text("❌ Mínimo $1,000"); return
             data["valor"] = v
-            # ✅ Pedir teléfono para SMS
-            if sms_autorizado(user_id):
-                data["step"] = 20
-                await update.message.reply_text(
-                    "📱 ¿A qué número enviar el *SMS de notificación*?\n"
-                    "(10 dígitos, empieza en 3)\n\n"
-                    "_Escribe_ `omitir` _si no deseas enviar SMS_",
-                    parse_mode="Markdown")
-            else:
-                if fecha_manual_mode.get(user_id):
-                    data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
-                await _gen_ahorros(update, data, COMPROBANTE_AHORROS2_CONFIG, "Corriente")
-        elif step == 20:  # ✅ SMS teléfono
-            if text.lower() == "omitir":
-                data["sms_tel"] = None
-            else:
-                tel = parse_tel(text)
-                if not tel:
-                    await update.message.reply_text(
-                        "❌ Número inválido. 10 dígitos, empieza en 3.\n"
-                        "O escribe `omitir` para saltar.", parse_mode="Markdown"); return
-                data["sms_tel"] = tel
             if fecha_manual_mode.get(user_id):
                 data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
             await _gen_ahorros(update, data, COMPROBANTE_AHORROS2_CONFIG, "Corriente")
@@ -1230,30 +1158,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(digitos) != 11:
                 await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos"); return
             data["numero_cuenta"] = text
-            # ✅ Pedir teléfono para SMS
-            if sms_autorizado(user_id):
-                data["step"] = 20
-                await update.message.reply_text(
-                    "📱 ¿A qué número enviar el *SMS de notificación*?\n"
-                    "(10 dígitos, empieza en 3)\n\n"
-                    "_Escribe_ `omitir` _si no deseas enviar SMS_",
-                    parse_mode="Markdown")
-            else:
-                if referencia_manual_mode.get(user_id):
-                    data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
-                if fecha_manual_mode.get(user_id):
-                    data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
-                await _gen_nequi_bc(update, data)
-        elif step == 20:  # ✅ SMS teléfono
-            if text.lower() == "omitir":
-                data["sms_tel"] = None
-            else:
-                tel = parse_tel(text)
-                if not tel:
-                    await update.message.reply_text(
-                        "❌ Número inválido. 10 dígitos, empieza en 3.\n"
-                        "O escribe `omitir` para saltar.", parse_mode="Markdown"); return
-                data["sms_tel"] = tel
             if referencia_manual_mode.get(user_id):
                 data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
             if fecha_manual_mode.get(user_id):
@@ -1290,30 +1194,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(digitos) != 11:
                 await update.message.reply_text("❌ La cuenta debe tener exactamente 11 dígitos"); return
             data["numero_cuenta"] = text
-            # ✅ Pedir teléfono para SMS
-            if sms_autorizado(user_id):
-                data["step"] = 20
-                await update.message.reply_text(
-                    "📱 ¿A qué número enviar el *SMS de notificación*?\n"
-                    "(10 dígitos, empieza en 3)\n\n"
-                    "_Escribe_ `omitir` _si no deseas enviar SMS_",
-                    parse_mode="Markdown")
-            else:
-                if referencia_manual_mode.get(user_id):
-                    data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
-                if fecha_manual_mode.get(user_id):
-                    data["step"] = 3; await update.message.reply_text("📅 Fecha:"); return
-                await _gen_nequi_ahorros(update, data)
-        elif step == 20:  # ✅ SMS teléfono
-            if text.lower() == "omitir":
-                data["sms_tel"] = None
-            else:
-                tel = parse_tel(text)
-                if not tel:
-                    await update.message.reply_text(
-                        "❌ Número inválido. 10 dígitos, empieza en 3.\n"
-                        "O escribe `omitir` para saltar.", parse_mode="Markdown"); return
-                data["sms_tel"] = tel
             if referencia_manual_mode.get(user_id):
                 data["step"] = 10; await update.message.reply_text("🔢 Referencia:"); return
             if fecha_manual_mode.get(user_id):
@@ -1938,3 +1818,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+ 
