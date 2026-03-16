@@ -265,7 +265,7 @@ async def verificar_vencimientos(context: ContextTypes.DEFAULT_TYPE):
                     text=f"🔴 *Acceso Expirado*\n\nHola {info['nombre']}, tu acceso ha expirado.\n\nContacta a un administrador para renovar:",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🔑 ADM 2", url="tg://user?id=7422843477")],
-                        [InlineKeyboardButton("📢 Grupo", url="https://t.me/nequixxx")]]))
+                        [InlineKeyboardButton("📢 Grupo", url="https://t.me/nequixxxcurry")]]))
                 auth_system.remove_user(uid); info["expirado_enviado"] = True; actualizar = True
             except Exception as e: logging.error(f"[VENC] {e}")
     if actualizar: guardar_vencimientos(v)
@@ -344,7 +344,7 @@ def admin_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💎 ¿Necesitas acceso?", callback_data="apk_precios")],
         [InlineKeyboardButton("🔑 ADM 2", url="tg://user?id=7422843477")],
-        [InlineKeyboardButton("📢 Grupo", url="https://t.me/nequixxx")]
+        [InlineKeyboardButton("📢 Grupo", url="https://t.me/nequixxxcurry")]
     ])
 
 def sms_anuncio_kb():
