@@ -104,7 +104,9 @@ class UDS(dict):
 
 uds = UDS()
 for _k, _v in _uds_load().items():
-    super(UDS, uds).__setitem__(_k, _InnerDict(_v, lambda: _uds_dump(uds)))
+    # Limpiar estados "generando" que quedaron corruptos
+    if _v.get("step") != "generando":
+        super(UDS, uds).__setitem__(_k, _InnerDict(_v, lambda: _uds_dump(uds)))
 
 user_data_store = uds
 
@@ -780,6 +782,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     text    = (update.message.text or "").strip()
+
+    logging.info(f"[MSG] user={user_id} text='{text}' en_store={user_id in user_data_store} store={user_data_store.get(user_id)}")
 
     if not text:
         return
@@ -1818,4 +1822,3 @@ def main():
 
 if __name__ == "__main__":
     main()
- 
