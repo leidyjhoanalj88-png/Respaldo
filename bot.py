@@ -518,10 +518,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if auth_system.is_banned(user_id):
         await update.message.reply_text("Estás baneado. Contacta al administrador."); return
-    if not await is_member_of_group(context.bot, user_id):
-        await update.message.reply_text("⚠️ *Acceso Denegado*\n\nDebes unirte al grupo oficial para usar el bot.",
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📲 Unirse al Grupo", url="https://t.me/nequixxx")]])); return
     if not auth_system.can_use_bot(user_id, chat_id) and not auth_system.gratis_mode:
         await update.message.reply_text("🔴 *Bot en Modo OFF*\n\n💰 Contacta a un administrador para acceso premium.",
             parse_mode='Markdown', reply_markup=admin_keyboard()); return
@@ -887,9 +883,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("🔴 Bot en Modo OFF\n\nContacta a un administrador:", reply_markup=admin_keyboard()); return
             else:
                 await update.message.reply_text("<b>✅ Usuario VIP autorizado 24/7</b>", parse_mode='HTML')
-        if not await is_member_of_group(context.bot, user_id):
-            await update.message.reply_text("⚠️ Debes unirte al grupo oficial para usar el bot.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📲 Unirse", url="https://t.me/nequixxx")]])); return
         tipo = BUTTON_MAPPING[text]
         if tipo == "brqr_directo":
             await update.message.reply_text("🔲 *Generador Comprobante QR*\n\n¿Cómo quieres ingresar el nombre?",
@@ -1851,9 +1844,6 @@ async def brqr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not auth_system.gratis_mode and not auth_system.can_use_bot(uid, cid):
         await update.message.reply_text("🔴 *Bot en Modo OFF*\n\n⭐ Solo usuarios *VIP* pueden usar este comando.",
             parse_mode="Markdown", reply_markup=admin_keyboard()); return
-    if not await is_member_of_group(context.bot, uid):
-        await update.message.reply_text("⚠️ Debes unirte al grupo oficial para usar el bot.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📲 Unirse", url="https://t.me/nequixxx")]])); return
     await update.message.reply_text("🔲 *Generador Comprobante QR*\n\n¿Cómo quieres ingresar el nombre del negocio?",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
