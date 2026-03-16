@@ -264,7 +264,7 @@ async def verificar_vencimientos(context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=uid, parse_mode="Markdown",
                     text=f"🔴 *Acceso Expirado*\n\nHola {info['nombre']}, tu acceso ha expirado.\n\nContacta a un administrador para renovar:",
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔑 ADM 2", url="tg://user?id=7422843477")],
+                        [InlineKeyboardButton("🔑 ADM 2", url="https://t.me/StephenCurry030")],
                         [InlineKeyboardButton("📢 Grupo", url="https://t.me/nequixxxcurry")]]))
                 auth_system.remove_user(uid); info["expirado_enviado"] = True; actualizar = True
             except Exception as e: logging.error(f"[VENC] {e}")
@@ -343,14 +343,14 @@ def guardar_referencias(r):
 def admin_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💎 ¿Necesitas acceso?", callback_data="apk_precios")],
-        [InlineKeyboardButton("🔑 ADM 2", url="tg://user?id=7422843477")],
+        [InlineKeyboardButton("🔑 ADM 2", url="https://t.me/StephenCurry030")],
         [InlineKeyboardButton("📢 Grupo", url="https://t.me/nequixxxcurry")]
     ])
 
 def sms_anuncio_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📲 Ver Paquetes SMS", callback_data="sms_ofertas")],
-        [InlineKeyboardButton("🔑 ADM 2", url="tg://user?id=7422843477")],
+        [InlineKeyboardButton("🔑 ADM 2", url="https://t.me/StephenCurry030")],
     ])
 
 SMS_ANUNCIO = (
@@ -493,8 +493,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not auth_system.can_use_bot(user_id, chat_id) and not auth_system.gratis_mode:
         await update.message.reply_text("🔴 *Bot en Modo OFF*\n\n💰 Contacta a un administrador para acceso premium.",
             parse_mode='Markdown', reply_markup=admin_keyboard()); return
-    if not auth_system.gratis_mode and auth_system.can_use_bot(user_id, chat_id):
-        await update.message.reply_text("<b>✅ Usuario VIP autorizado 24/7</b>", parse_mode='HTML')
     keyboard = [
         [KeyboardButton("💚 Nequi"),          KeyboardButton("🔴 Daviplata")],
         [KeyboardButton("🔵 Bre B"),           KeyboardButton("🟣 Transfiya")],
@@ -855,8 +853,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not auth_system.gratis_mode:
             if not auth_system.can_use_bot(user_id, chat_id):
                 await update.message.reply_text("🔴 Bot en Modo OFF\n\nContacta a un administrador:", reply_markup=admin_keyboard()); return
-            else:
-                await update.message.reply_text("<b>✅ Usuario VIP autorizado 24/7</b>", parse_mode='HTML')
         tipo = BUTTON_MAPPING[text]
         if tipo == "brqr_directo":
             await update.message.reply_text("🔲 *Generador Comprobante QR*\n\n¿Cómo quieres ingresar el nombre?",
