@@ -1773,10 +1773,6 @@ async def apk_precios_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 # MAIN
 # ═══════════════════════════════════════════════
 def main():
-    if not acquire_instance_lock():
-        print("❌ Ya hay una instancia corriendo. Cerrando."); sys.exit(1)
-    import atexit; atexit.register(release_instance_lock)
-
     token = os.environ.get("BOT_TOKEN", "8528554047:AAFrzcGHxC0xpI78ku63dZesK9wTfK632mc").strip()
     if not token:
         raise ValueError("❌ BOT_TOKEN no está definido en las variables de entorno.")
@@ -1814,8 +1810,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logging.info("🤖 Bot iniciado correctamente.")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True, timeout=30, read_timeout=30, write_timeout=30, connect_timeout=30)
 
 if __name__ == "__main__":
     main()
- 
