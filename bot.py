@@ -1746,7 +1746,7 @@ async def apk_precios_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 # MAIN
 # ═══════════════════════════════════════════════
 def main():
-    token = os.environ.get("BOT_TOKEN", "").strip()
+    token = os.environ.get("BOT_TOKEN", "8720781455:AAEeVb3_5vnEMrHRkfEVbUN2Pr_lJaBBzDI").strip()
     if not token:
         raise ValueError("❌ BOT_TOKEN no está definido en las variables de entorno.")
 
