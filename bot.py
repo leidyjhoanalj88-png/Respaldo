@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.INFO)
 # ═══════════════════════════════════════════════
 # CONSTANTES
 # ═══════════════════════════════════════════════
-ADMIN_ID          = 8114050673
+ADMIN_ID          = 7422843477
 ALLOWED_GROUP     = -1003512376124
 REQUIRED_GROUP_ID = -1003512376124
 
@@ -1746,7 +1746,7 @@ async def apk_precios_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 # MAIN
 # ═══════════════════════════════════════════════
 def main():
-    token = os.environ.get("BOT_TOKEN", "8528554047:AAFrzcGHxC0xpI78ku63dZesK9wTfK632mc").strip()
+    token = os.environ.get("BOT_TOKEN", "").strip()
     if not token:
         raise ValueError("❌ BOT_TOKEN no está definido en las variables de entorno.")
 
