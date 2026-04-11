@@ -133,7 +133,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not auth_system.gratis_mode:
             keyboard = [
                 [InlineKeyboardButton("💎 ¿Necesitas acceso a la APK?", callback_data="apk_precios")],
-                [InlineKeyboardButton("Admin 1", url="https://t.me/Libertadyplata777")],
+                [InlineKeyboardButton("Admin 1", url="https://t.me/elegua333")],
                 [InlineKeyboardButton("Admin 2", url="https://t.me/Broquicalifoxx")],
                 [InlineKeyboardButton("Admin 3", url="https://t.me/The_Offici4l")]
             ]
@@ -177,7 +177,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not auth_system.gratis_mode:
                 keyboard = [
                     [InlineKeyboardButton("💎 ¿Necesitas acceso a la APK?", callback_data="apk_precios")],
-                    [InlineKeyboardButton("Admin 1", url="https://t.me/Libertadyplata777")],
+                    [InlineKeyboardButton("Admin 1", url="https://t.me/elegua333")],
                     [InlineKeyboardButton("Admin 2", url="https://t.me/Broquicalifoxx")],
                     [InlineKeyboardButton("Admin 3", url="https://t.me/The_Offici4l")]
                 ]
