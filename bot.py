@@ -44,7 +44,7 @@ import json
 
 logging.basicConfig(level=logging.DEBUG)
 
-ADMIN_ID = 8114050673
+ADMIN_ID = 5526142920
 ALLOWED_GROUP = -1003832824723
 ADMINS_USERNAMES = ["@Libertadyplata777"]
 auth_system = AuthSystem(ADMIN_ID, ALLOWED_GROUP)
