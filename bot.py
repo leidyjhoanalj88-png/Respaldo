@@ -46,7 +46,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 ADMIN_ID = 5526142920
 ALLOWED_GROUP = -1003832824723
-ADMINS_USERNAMES = ["@Libertadyplata777"]
+ADMINS_USERNAMES = ["@elegua333"]
 auth_system = AuthSystem(ADMIN_ID, ALLOWED_GROUP)
 user_data_store = {}
 fecha_manual_mode = {}
@@ -104,7 +104,7 @@ async def notify_main_admin(context, admin_id, admin_name, action, target_info="
 async def start_redirect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("Necesitas acceso a la APK?", callback_data="apk_precios")],
-        [InlineKeyboardButton("Admin 1", url="https://t.me/Libertadyplata777")],
+        [InlineKeyboardButton("Admin 1", url="https://t.me/elegua333")],
         [InlineKeyboardButton("Admin 2", url="https://t.me/Broquicalifoxx")],
         [InlineKeyboardButton("Admin 3", url="https://t.me/The_Offici4l")]
     ]
