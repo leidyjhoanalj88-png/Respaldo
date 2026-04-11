@@ -1405,7 +1405,7 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(texto, parse_mode='Markdown')
 
 def main():
-    app = Application.builder().token("8239033621:AAE_hpwlVUE6mP9oawZyu_o7jp02RXe3Gtk").build()
+    app = Application.builder().token("8239033621:AAE-NEpuudYHuaUbVGCw_7cPkNmKoqKYRMA").build()
     app.add_handler(CommandHandler("comprobante", start))
     app.add_handler(CommandHandler("start", start_redirect))
     app.add_handler(CommandHandler("fechas", fechas_command))
