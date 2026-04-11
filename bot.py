@@ -33,7 +33,7 @@ import json
 logging.basicConfig(level=logging.DEBUG)
 
 # Configuration
-ADMIN_ID = 8114050673  # Owner ID
+ADMIN_ID = 8517391123  # Owner ID
 ALLOWED_GROUP = -1003832824723  # Grupo permitido
 
 # Admins para botones
@@ -239,7 +239,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Nequi Ahorros": "comprobante_nequi_ahorros"
     }
 
-    # Si el mensaje es uno de los botones del teclado, verificar baneos
+    # Si el mensaje es uno de los botones del teclado, reiniciar siempre
+    if text in button_mapping:
+        user_data_store.pop(user_id, None)  # Limpiar estado anterior si existe
     if text in button_mapping and user_id not in user_data_store:
         # Verificar si el bot está apagado
         if not auth_system.can_use_bot(user_id, chat_id):
