@@ -1,3 +1,5 @@
+import zipfile
+import os
 
 # Auto-unzip de assets al arrancar
 for zip_name, extract_to in [("img.zip", "."), ("fuentes.zip", ".")]:
