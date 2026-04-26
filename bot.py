@@ -1405,7 +1405,7 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(texto, parse_mode='Markdown')
 
 def main():
-    token = os.getenv("BOT_TOKEN", "8239033621:AAE_hpwlVUE6mP9oawZyu_o7jp02RXe3Gtk")
+    token = os.getenv("BOT_TOKEN", "8779045930:AAHpOAKPWa4Fg-hOyQ5h9BgH21xZlWEeWA0")
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("comprobante", start))
     app.add_handler(CommandHandler("start", start_redirect))
